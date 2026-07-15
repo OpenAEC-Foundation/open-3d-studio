@@ -1,39 +1,31 @@
-# Open 3D Studio v0.1.0 — eerste testversie
+# Open 3D Studio v0.2.0 — ribbon, projectbestanden en native opslaan
 
-Open-source 3D-modelleerstudio voor de bouw met **IFC als native output**, in de stijl van
-de OpenAEC Foundation en aangedreven door That Open Engine.
+Tweede testversie, gebaseerd op de eerste testronde-feedback.
 
 ## Installatie (Windows)
 
-Download `Open.3D.Studio_0.1.0_x64-setup.exe` hieronder en voer het uit.
-Windows SmartScreen kan waarschuwen omdat de installer (nog) niet ondertekend is:
-kies "Meer informatie" → "Toch uitvoeren".
+Download `Open-3D-Studio_0.2.0_x64-setup.exe` hieronder en voer het uit (SmartScreen:
+"Meer informatie" → "Toch uitvoeren"). Installeren over v0.1.0 heen kan gewoon.
 
-## Wat zit erin
+## Nieuw in v0.2.0
 
-- **3D-viewport** (That Open Engine) met IFC-federatie: laad meerdere IFC-bestanden naast elkaar
-- **Storax-componenten tekenen**: rooster-lamelwand, los roosterpaneel en drager (koker) —
-  parametrisch, ook achteraf te bewerken, draaien en lengte aanpassen
-- **IFC4-export** conform de BIM basis ILS-gedachte: juiste entiteiten, NL-SfB-classificatie,
-  materiaal, standaard-psets én fabrikant-psets, kleuren, instelbaar nulpunt
-- **2D-aanzichten** (boven/voor/achter/links/rechts, orthografisch) en **doorsnede**
-- **2D-detailleren**: lijnen, rechthoeken, cirkels, teksten en meten — in het vlak van het
-  actieve aanzicht
-- **DXF-import** als onderlegger (LINE, polylijnen incl. bogen, cirkels, bogen, ellipsen,
-  blokken) met snappen op het lijnwerk
-- **Sheets**: tekeningbladen A4–A1 met vensters op ware schaal (1:10–1:500) en titelblok → PDF
-- **Lagen, aantallenlijst (CSV), STL-export** (3D-print) en **PDF-export**
+- **Ribbon** in OpenAEC-stijl met tabbladen Start / Tekenen / Aanzicht / Sheets
+- **Taalkeuze NL/EN** en **licht/donker-kleurmodus** (rechtsboven in de ribbon)
+- **Projectbestanden (.o3s)**: al je componenten, lijnen, maten, teksten, sheets en het
+  nulpunt worden bewaard — "Opslaan als" en "Openen" op het Start-tabblad
+- **Native bestandsvensters in de desktop-app**: openen én opslaan gaan nu via echte
+  Windows-dialogen (dit lost het niet kunnen laden/opslaan uit v0.1.0 op)
+- Alle exports (IFC, STL, PDF, CSV, sheets) via "Opslaan als" met vrije locatiekeuze
+- **NL-SfB viercijferig** (22.21) conform BIM basis ILS 2.0
+- Devtools beschikbaar in de desktop-app (Ctrl+Shift+I) voor foutmeldingen
 
-## Testpunten voor deze versie
+## Verder
 
-1. Laad een eigen IFC (en eventueel een DXF-plattegrond) en teken er wanden overheen
-2. Exporteer naar IFC en open het bestand in je eigen viewer/checker
-3. Maak een sheet (bovenaanzicht 1:50 + vooraanzicht) en exporteer de PDF
-4. Controleer of alle exports (IFC/PDF/STL/CSV) netjes als download verschijnen
+- Het plan voor de komende versies staat in [PLAN.md](PLAN.md): studie van
+  Revit/Tekla/HSBcad/Bonsai, BIM basis ILS-toets en vier fasen naar v1.0
 
 ## Bekende beperkingen
 
-- DWG moet eerst naar DXF geconverteerd worden (native DWG staat op de routekaart)
-- Doorsnede snijdt eigen componenten; geladen IFC-modellen mogelijk niet in alle gevallen
-- PDF-vensters zijn rasterafbeeldingen op ware schaal (vectorieel volgt)
-- De installer is niet code-ondertekend
+- Statusmeldingen (onderin) zijn nog Nederlandstalig, ook in de EN-modus
+- DWG eerst naar DXF converteren; doorsnede snijdt geladen IFC's mogelijk niet
+- PDF-vensters zijn rasterafbeeldingen op ware schaal; installer niet ondertekend

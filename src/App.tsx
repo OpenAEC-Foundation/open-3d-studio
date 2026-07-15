@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Studio, type ToolName, type ViewName } from "./core/studio";
 import { getTemplate, templates } from "./catalog/registry";
 import type { LoadedModelInfo, ParamValues, PlacedElement, Sheet } from "./core/types";
+import { openFilesDialog, saveFileAs } from "./core/fileio";
 import { ParamsPanel } from "./ui/ParamsPanel";
+import { Ribbon, type RibbonTab } from "./ui/Ribbon";
+import { makeT, type Lang } from "./ui/i18n";
 
 interface QtyRow {
   key: string;
@@ -35,36 +38,18 @@ function buildQuantities(elements: PlacedElement[]): QtyRow[] {
   return [...map.values()].sort((a, b) => a.component.localeCompare(b.component));
 }
 
-function downloadCsv(rows: QtyRow[]) {
-  const header = "Component;Lengte_mm;Hoogte_mm;Kleur;Aantal";
-  const body = rows.map((r) =>
-    [r.component, r.lengteMm, r.hoogteMm ?? "", r.kleur, r.aantal].join(";"),
-  );
-  const blob = new Blob(["﻿" + [header, ...body].join("\r\n")], {
-    type: "text/csv;charset=utf-8",
-  });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "open-3d-studio_aantallen.csv";
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-const VIEWS: { id: ViewName; label: string }[] = [
-  { id: "iso", label: "3D" },
-  { id: "top", label: "Boven" },
-  { id: "front", label: "Voor" },
-  { id: "back", label: "Achter" },
-  { id: "left", label: "Links" },
-  { id: "right", label: "Rechts" },
-];
+const VIEW_IDS: ViewName[] = ["iso", "top", "front", "back", "left", "right"];
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const studioRef = useRef<Studio | null>(null);
   const initializedRef = useRef(false);
 
+  const [lang, setLang] = useState<Lang>(() => (localStorage.getItem("o3s-lang") as Lang) || "nl");
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem("o3s-theme") as "dark" | "light") || "dark",
+  );
+  const [ribbonTab, setRibbonTab] = useState("start");
   const [tool, setTool] = useState<ToolName>("select");
   const [templateId, setTemplateId] = useState("storax-rooster-lamelwand");
   const [params, setParams] = useState<ParamValues>(() => ({
@@ -80,6 +65,8 @@ export default function App() {
   const [sheets, setSheets] = useState<Sheet[]>([]);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
   const [status, setStatus] = useState("Studio wordt gestart …");
+
+  const t = useMemo(() => makeT(lang), [lang]);
 
   useEffect(() => {
     if (initializedRef.current || !containerRef.current) return;
@@ -103,7 +90,10 @@ export default function App() {
       onStatus: setStatus,
     };
     studio.init(containerRef.current).then(
-      () => setLayers(studio.getLayers()),
+      () => {
+        setLayers(studio.getLayers());
+        studio.setTheme((localStorage.getItem("o3s-theme") as "dark" | "light") || "dark");
+      },
       (err) => {
         console.error(err);
         setStatus("Starten van de 3D-omgeving is mislukt (zie console).");
@@ -112,14 +102,25 @@ export default function App() {
     return () => studio.dispose();
   }, []);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("o3s-theme", theme);
+    studioRef.current?.setTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("o3s-lang", lang);
+  }, [lang]);
+
   const studio = () => studioRef.current;
   const template = getTemplate(templateId);
   const selected = elements.find((e) => e.id === selectedId) ?? null;
   const quantities = useMemo(() => buildQuantities(elements), [elements]);
+  const activeSheet = sheets.find((s) => s.id === activeSheetId) ?? null;
 
-  const activateTool = (t: ToolName) => {
-    setTool(t);
-    studio()?.setTool(t);
+  const activateTool = (toolName: ToolName) => {
+    setTool(toolName);
+    studio()?.setTool(toolName);
   };
 
   const onTemplateChange = (id: string) => {
@@ -145,6 +146,54 @@ export default function App() {
     studio()?.setOrigin({ x: next.x / 1000, y: next.y / 1000, z: next.z / 1000 });
   };
 
+  // ---------------------------------------------------------------- project & bestanden
+  const projectFilter = { name: "Open 3D Studio project", extensions: ["o3s"] };
+
+  const saveProjectAs = async () => {
+    const s = studio();
+    if (!s) return;
+    const project = { ...s.serializeProject(), sheets };
+    await saveFileAs(JSON.stringify(project, null, 2), "project.o3s", [projectFilter]);
+  };
+
+  const openProject = async () => {
+    const files = await openFilesDialog([projectFilter], false);
+    if (!files.length) return;
+    try {
+      const json = JSON.parse(await files[0].text());
+      studio()?.restoreProject(json);
+      setSheets(json.sheets ?? []);
+      setActiveSheetId(null);
+      const o = json.origin ?? { x: 0, y: 0, z: 0 };
+      setOrigin({ x: Math.round(o.x * 1000), y: Math.round(o.y * 1000), z: Math.round(o.z * 1000) });
+    } catch (err) {
+      console.error(err);
+      setStatus("Projectbestand kon niet worden gelezen.");
+    }
+  };
+
+  const loadModels = async () => {
+    const files = await openFilesDialog(
+      [
+        { name: "Modellen (IFC, DXF)", extensions: ["ifc", "dxf"] },
+        { name: "IFC", extensions: ["ifc"] },
+        { name: "DXF", extensions: ["dxf"] },
+      ],
+      true,
+    );
+    if (files.length) await studio()?.loadFiles(files);
+  };
+
+  const exportCsv = async () => {
+    const header = "Component;Lengte_mm;Hoogte_mm;Kleur;Aantal";
+    const body = quantities.map((r) =>
+      [r.component, r.lengteMm, r.hoogteMm ?? "", r.kleur, r.aantal].join(";"),
+    );
+    await saveFileAs("﻿" + [header, ...body].join("\r\n"), "open-3d-studio_aantallen.csv", [
+      { name: "CSV", extensions: ["csv"] },
+    ]);
+  };
+
   const addSheet = () => {
     const n = sheets.length + 1;
     const sheet: Sheet = {
@@ -157,13 +206,115 @@ export default function App() {
     };
     setSheets([...sheets, sheet]);
     setActiveSheetId(sheet.id);
+    setRibbonTab("sheets");
   };
 
   const updateSheet = (id: string, patch: Partial<Sheet>) => {
     setSheets(sheets.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   };
 
-  const activeSheet = sheets.find((s) => s.id === activeSheetId) ?? null;
+  // ---------------------------------------------------------------- ribbon
+  const viewLabels: Record<ViewName, string> = {
+    iso: t("view3d"),
+    top: t("viewTop"),
+    front: t("viewFront"),
+    back: t("viewBack"),
+    left: t("viewLeft"),
+    right: t("viewRight"),
+  };
+
+  const ribbonTabs: RibbonTab[] = [
+    {
+      id: "start",
+      label: t("tabStart"),
+      groups: [
+        {
+          title: t("grpProject"),
+          items: [
+            { id: "open", icon: "📂", label: t("btnOpen"), onClick: openProject },
+            { id: "save", icon: "💾", label: t("btnSaveAs"), onClick: saveProjectAs },
+          ],
+        },
+        {
+          title: t("grpImport"),
+          items: [{ id: "load", icon: "⬆", label: t("btnLoadModel"), onClick: loadModels }],
+        },
+        {
+          title: t("grpExport"),
+          items: [
+            { id: "ifc", icon: "⬇", label: t("btnExportIfc"), accent: true, onClick: () => studio()?.exportIfc() },
+            { id: "stl", icon: "▲", label: t("btnExportStl"), onClick: () => studio()?.exportStl() },
+            { id: "pdf", icon: "⎙", label: t("btnExportPdf"), onClick: () => studio()?.exportPdf(viewLabels[view]) },
+            { id: "csv", icon: "▦", label: t("btnExportCsv"), onClick: exportCsv },
+          ],
+        },
+      ],
+    },
+    {
+      id: "draw",
+      label: t("tabDraw"),
+      groups: [
+        {
+          title: t("grpComponents"),
+          items: [
+            { id: "select", icon: "⌖", label: t("btnSelect"), active: tool === "select", onClick: () => activateTool("select") },
+            { id: "draw", icon: "▤", label: t("btnDrawComponent"), active: tool === "draw", title: template.name, onClick: () => activateTool("draw") },
+          ],
+        },
+        {
+          title: t("grpSketch"),
+          items: [
+            { id: "line", icon: "╱", label: t("btnLine"), active: tool === "line", onClick: () => activateTool("line") },
+            { id: "rect", icon: "▭", label: t("btnRect"), active: tool === "rect", onClick: () => activateTool("rect") },
+            { id: "circle", icon: "◯", label: t("btnCircle"), active: tool === "circle", onClick: () => activateTool("circle") },
+            { id: "text", icon: "T", label: t("btnText"), active: tool === "text", onClick: () => activateTool("text") },
+            { id: "measure", icon: "⟷", label: t("btnMeasure"), active: tool === "measure", onClick: () => activateTool("measure") },
+          ],
+        },
+      ],
+    },
+    {
+      id: "view",
+      label: t("tabView"),
+      groups: [
+        {
+          title: t("grpViews"),
+          items: [
+            ...VIEW_IDS.map((v) => ({
+              id: v,
+              icon: v === "iso" ? "◧" : "▦",
+              label: viewLabels[v],
+              active: view === v,
+              onClick: () => onViewChange(v),
+            })),
+            { id: "zoom", icon: "⛶", label: t("btnZoomAll"), onClick: () => studio()?.zoomAll() },
+          ],
+        },
+        {
+          title: t("grpSection"),
+          items: [
+            { id: "section", icon: "◪", label: t("btnSection"), active: tool === "section", onClick: () => activateTool("section") },
+            { id: "sectionoff", icon: "✕", label: t("btnSectionOff"), onClick: () => studio()?.clearSection() },
+          ],
+        },
+      ],
+    },
+    {
+      id: "sheets",
+      label: t("tabSheets"),
+      groups: [
+        {
+          title: t("grpSheet"),
+          items: [
+            { id: "newsheet", icon: "🗋", label: t("btnNewSheet"), onClick: addSheet },
+            ...(activeSheet
+              ? [{ id: "exportsheet", icon: "⎙", label: t("exportSheet"), accent: true, onClick: () => studio()?.exportSheetPdf(activeSheet) }]
+              : []),
+          ],
+        },
+      ],
+    },
+  ];
 
   const selectedLengthMm = selected
     ? Math.round(Math.hypot(selected.end.x - selected.start.x, selected.end.z - selected.start.z) * 1000)
@@ -180,46 +331,43 @@ export default function App() {
         <span className="header-note">open source · That Open Engine</span>
       </header>
 
-      <div className="main">
-        <nav className="toolbar">
-          <button className={tool === "select" ? "tool active" : "tool"} title="Selecteren" onClick={() => activateTool("select")}>⌖</button>
-          <button className={tool === "draw" ? "tool active" : "tool"} title={`${template.name} tekenen`} onClick={() => activateTool("draw")}>▤</button>
-          <button className={tool === "line" ? "tool active" : "tool"} title="Lijnen tekenen" onClick={() => activateTool("line")}>╱</button>
-          <button className={tool === "rect" ? "tool active" : "tool"} title="Rechthoek tekenen" onClick={() => activateTool("rect")}>▭</button>
-          <button className={tool === "circle" ? "tool active" : "tool"} title="Cirkel tekenen" onClick={() => activateTool("circle")}>◯</button>
-          <button className={tool === "measure" ? "tool active" : "tool"} title="Meten" onClick={() => activateTool("measure")}>⟷</button>
-          <button className={tool === "text" ? "tool active" : "tool"} title="Tekst plaatsen" onClick={() => activateTool("text")}>T</button>
-          <button className={tool === "section" ? "tool active" : "tool"} title="Doorsnede plaatsen" onClick={() => activateTool("section")}>◪</button>
-          <div className="toolbar-sep" />
-          <button className="tool" title="IFC of DXF laden (meerdere mogelijk)" onClick={() => fileInputRef.current?.click()}>⬆</button>
-          <button className="tool" title="Exporteren naar IFC" onClick={() => studio()?.exportIfc()}>⬇</button>
-          <button className="tool" title="Exporteren naar STL (3D-print, mm)" onClick={() => studio()?.exportStl()}>▲</button>
-          <button className="tool" title="Exporteren naar PDF (huidig aanzicht)" onClick={() => studio()?.exportPdf(VIEWS.find((v) => v.id === view)?.label ?? "3D")}>⎙</button>
-          <div className="toolbar-sep" />
-          <button className="tool" title="Zoom alles" onClick={() => studio()?.zoomAll()}>⛶</button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".ifc,.dxf"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files?.length) studio()?.loadFiles(Array.from(e.target.files));
-              e.target.value = "";
-            }}
-          />
-        </nav>
+      <Ribbon
+        tabs={ribbonTabs}
+        activeTab={ribbonTab}
+        onTabChange={setRibbonTab}
+        right={
+          <>
+            <select
+              className="lang-select"
+              title={t("language")}
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+            >
+              <option value="nl">NL</option>
+              <option value="en">EN</option>
+            </select>
+            <button
+              className="theme-btn"
+              title={t("theme")}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              {theme === "dark" ? "☀" : "☾"}
+            </button>
+          </>
+        }
+      />
 
+      <div className="main">
         <div className="viewport-wrap">
           <div className="viewport" ref={containerRef} />
           <div className="view-overlay">
-            {VIEWS.map((v) => (
+            {VIEW_IDS.map((v) => (
               <button
-                key={v.id}
-                className={view === v.id ? "view-btn active" : "view-btn"}
-                onClick={() => onViewChange(v.id)}
+                key={v}
+                className={view === v ? "view-btn active" : "view-btn"}
+                onClick={() => onViewChange(v)}
               >
-                {v.label}
+                {viewLabels[v]}
               </button>
             ))}
           </div>
@@ -227,30 +375,26 @@ export default function App() {
 
         <aside className="sidepanel">
           <section>
-            <h2>Component</h2>
+            <h2>{t("panComponent")}</h2>
             {!selected && (
               <select
                 className="template-select"
                 value={templateId}
                 onChange={(e) => onTemplateChange(e.target.value)}
               >
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
+                {templates.map((tm) => (
+                  <option key={tm.id} value={tm.id}>
+                    {tm.name}
                   </option>
                 ))}
               </select>
             )}
-            <p className="muted">
-              {selected
-                ? `${selected.name} — parameters bewerken.`
-                : "Parameters voor nieuw te tekenen componenten."}
-            </p>
+            <p className="muted">{selected ? `${selected.name} — ${t("editParams")}` : t("newParams")}</p>
             <ParamsPanel template={template} values={params} onChange={onParamsChange} />
             {selected && (
               <div className="selected-tools">
                 <label className="param-row">
-                  <span>Lengte</span>
+                  <span>{t("length")}</span>
                   <span className="param-input">
                     <input
                       type="number"
@@ -263,7 +407,7 @@ export default function App() {
                   </span>
                 </label>
                 <div className="rotate-row">
-                  <span>Draaien</span>
+                  <span>{t("rotate")}</span>
                   <div>
                     {[-90, -15, 15, 90].map((d) => (
                       <button key={d} className="mini" onClick={() => studio()?.rotateElement(selected.id, d)}>
@@ -273,7 +417,7 @@ export default function App() {
                   </div>
                 </div>
                 <button className="danger" onClick={() => studio()?.removeElement(selected.id)}>
-                  Element verwijderen
+                  {t("deleteElement")}
                 </button>
               </div>
             )}
@@ -281,24 +425,23 @@ export default function App() {
 
           {tool === "text" && (
             <section>
-              <h2>Tekst</h2>
+              <h2>{t("panText")}</h2>
               <input
                 className="template-select"
                 type="text"
                 value={textValue}
-                placeholder="Te plaatsen tekst"
                 onChange={(e) => {
                   setTextValue(e.target.value);
                   const s = studio();
                   if (s) s.currentText = e.target.value;
                 }}
               />
-              <p className="muted">Klik in het model om deze tekst te plaatsen.</p>
+              <p className="muted">{t("textHint")}</p>
             </section>
           )}
 
           <section>
-            <h2>Nulpunt</h2>
+            <h2>{t("panOrigin")}</h2>
             <div className="origin-row">
               {(["x", "y", "z"] as const).map((axis) => (
                 <label key={axis}>
@@ -313,11 +456,11 @@ export default function App() {
               ))}
               <em>mm</em>
             </div>
-            <p className="muted">IFC-export wordt relatief aan dit punt geschreven.</p>
+            <p className="muted">{t("originHint")}</p>
           </section>
 
           <section>
-            <h2>Lagen</h2>
+            <h2>{t("panLayers")}</h2>
             <ul className="list">
               {layers.map((l) => (
                 <li key={l.name}>
@@ -336,16 +479,52 @@ export default function App() {
               ))}
             </ul>
             <div className="btn-row">
-              <button className="mini" onClick={() => studio()?.clearLines()}>Wis lijnen</button>
-              <button className="mini" onClick={() => studio()?.clearMeasures()}>Wis maten</button>
-              <button className="mini" onClick={() => studio()?.clearTexts()}>Wis teksten</button>
-              <button className="mini" onClick={() => studio()?.clearSection()}>Doorsnede weg</button>
+              <button className="mini" onClick={() => studio()?.clearLines()}>{t("clearLines")}</button>
+              <button className="mini" onClick={() => studio()?.clearMeasures()}>{t("clearMeasures")}</button>
+              <button className="mini" onClick={() => studio()?.clearTexts()}>{t("clearTexts")}</button>
+              <button className="mini" onClick={() => studio()?.clearSection()}>{t("clearSection")}</button>
             </div>
           </section>
 
           <section>
-            <h2>Sheets</h2>
-            {sheets.length === 0 && <p className="muted">Nog geen tekeningbladen.</p>}
+            <h2>{t("panModels")}</h2>
+            {models.length === 0 && <p className="muted">{t("noModels")}</p>}
+            <ul className="list">
+              {models.map((m) => (
+                <li key={m.id}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={m.visible}
+                      onChange={(e) => studio()?.setModelVisible(m.id, e.target.checked)}
+                    />
+                    <span className="list-name" title={m.name}>{m.name}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section>
+            <h2>{t("panElements")}</h2>
+            {elements.length === 0 && <p className="muted">{t("noElements")}</p>}
+            <ul className="list">
+              {elements.map((el) => (
+                <li key={el.id}>
+                  <button
+                    className={el.id === selectedId ? "list-btn active" : "list-btn"}
+                    onClick={() => studio()?.selectElement(el.id)}
+                  >
+                    {el.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section>
+            <h2>{t("panSheets")}</h2>
+            {sheets.length === 0 && <p className="muted">{t("noSheets")}</p>}
             <ul className="list">
               {sheets.map((s) => (
                 <li key={s.id}>
@@ -361,7 +540,7 @@ export default function App() {
             {activeSheet && (
               <div className="sheet-editor">
                 <label className="param-row">
-                  <span>Naam</span>
+                  <span>{t("sheetName")}</span>
                   <input
                     type="text"
                     value={activeSheet.name}
@@ -369,7 +548,7 @@ export default function App() {
                   />
                 </label>
                 <label className="param-row">
-                  <span>Nummer</span>
+                  <span>{t("sheetNumber")}</span>
                   <input
                     type="text"
                     value={activeSheet.number}
@@ -377,7 +556,7 @@ export default function App() {
                   />
                 </label>
                 <label className="param-row">
-                  <span>Formaat</span>
+                  <span>{t("sheetFormat")}</span>
                   <select
                     value={activeSheet.format}
                     onChange={(e) => updateSheet(activeSheet.id, { format: e.target.value as Sheet["format"] })}
@@ -388,17 +567,17 @@ export default function App() {
                   </select>
                 </label>
                 <label className="param-row">
-                  <span>Oriëntatie</span>
+                  <span>{t("sheetOrientation")}</span>
                   <select
-                    value={activeSheet.landscape ? "liggend" : "staand"}
-                    onChange={(e) => updateSheet(activeSheet.id, { landscape: e.target.value === "liggend" })}
+                    value={activeSheet.landscape ? "l" : "p"}
+                    onChange={(e) => updateSheet(activeSheet.id, { landscape: e.target.value === "l" })}
                   >
-                    <option value="liggend">Liggend</option>
-                    <option value="staand">Staand</option>
+                    <option value="l">{t("landscape")}</option>
+                    <option value="p">{t("portrait")}</option>
                   </select>
                 </label>
 
-                <p className="muted">Vensters (aanzicht + schaal):</p>
+                <p className="muted">{t("viewportsHint")}</p>
                 {activeSheet.viewports.map((vp, i) => (
                   <div className="viewport-row" key={i}>
                     <select
@@ -409,8 +588,8 @@ export default function App() {
                         updateSheet(activeSheet.id, { viewports });
                       }}
                     >
-                      {VIEWS.map((v) => (
-                        <option key={v.id} value={v.id}>{v.label}</option>
+                      {VIEW_IDS.map((v) => (
+                        <option key={v} value={v}>{viewLabels[v]}</option>
                       ))}
                     </select>
                     <select
@@ -427,7 +606,6 @@ export default function App() {
                     </select>
                     <button
                       className="mini"
-                      title="Venster verwijderen"
                       onClick={() => {
                         const viewports = activeSheet.viewports.filter((_, j) => j !== i);
                         updateSheet(activeSheet.id, { viewports });
@@ -447,11 +625,11 @@ export default function App() {
                         })
                       }
                     >
-                      + Venster
+                      {t("addViewport")}
                     </button>
                   )}
                   <button className="mini accent" onClick={() => studio()?.exportSheetPdf(activeSheet)}>
-                    Exporteer PDF
+                    {t("exportSheet")}
                   </button>
                   <button
                     className="mini"
@@ -460,63 +638,24 @@ export default function App() {
                       setActiveSheetId(null);
                     }}
                   >
-                    Verwijder blad
+                    {t("deleteSheet")}
                   </button>
                 </div>
               </div>
             )}
-            <div className="btn-row">
-              <button className="mini" onClick={addSheet}>+ Nieuw blad</button>
-            </div>
           </section>
 
           <section>
-            <h2>Geladen modellen</h2>
-            {models.length === 0 && <p className="muted">Nog geen IFC geladen.</p>}
-            <ul className="list">
-              {models.map((m) => (
-                <li key={m.id}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={m.visible}
-                      onChange={(e) => studio()?.setModelVisible(m.id, e.target.checked)}
-                    />
-                    <span className="list-name" title={m.name}>{m.name}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <section>
-            <h2>Getekende elementen</h2>
-            {elements.length === 0 && <p className="muted">Nog geen elementen getekend.</p>}
-            <ul className="list">
-              {elements.map((el) => (
-                <li key={el.id}>
-                  <button
-                    className={el.id === selectedId ? "list-btn active" : "list-btn"}
-                    onClick={() => studio()?.selectElement(el.id)}
-                  >
-                    {el.name}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <section>
-            <h2>Aantallen</h2>
-            {quantities.length === 0 && <p className="muted">Nog geen componenten.</p>}
+            <h2>{t("panQuantities")}</h2>
+            {quantities.length === 0 && <p className="muted">{t("noComponents")}</p>}
             {quantities.length > 0 && (
               <>
                 <table className="qty-table">
                   <thead>
                     <tr>
-                      <th>Component</th>
-                      <th>L (mm)</th>
-                      <th>St.</th>
+                      <th>{t("colComponent")}</th>
+                      <th>{t("colLength")}</th>
+                      <th>{t("colCount")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -530,9 +669,7 @@ export default function App() {
                   </tbody>
                 </table>
                 <div className="btn-row">
-                  <button className="mini" onClick={() => downloadCsv(quantities)}>
-                    Exporteer CSV
-                  </button>
+                  <button className="mini" onClick={exportCsv}>{t("exportCsv")}</button>
                 </div>
               </>
             )}

@@ -17,6 +17,7 @@ import { buildElementGroup, disposeGroup } from "./meshBuilder";
 import { exportElementsToIfc } from "./ifcExport";
 import { importDxf } from "./dxfImport";
 import { renderSheetPdf } from "./sheetPdf";
+import { saveFileAs, type FileFilter } from "./fileio";
 
 export type ToolName =
   | "select"
@@ -263,18 +264,21 @@ export class Studio {
     this.setStatus("IFC-export maken …");
     try {
       const bytes = await exportElementsToIfc(this.elements, { origin: this.origin });
-      this.download(
-        new Blob([bytes as unknown as BlobPart], { type: "application/x-step" }),
-        "open-3d-studio_storax-componenten.ifc",
-      );
-      this.setStatus(`IFC geëxporteerd: ${this.elements.length} element(en).`);
+      if (
+        await this.saveAs(bytes, "open-3d-studio_storax-componenten.ifc", {
+          name: "IFC-model",
+          extensions: ["ifc"],
+        })
+      ) {
+        this.setStatus(`IFC geëxporteerd: ${this.elements.length} element(en).`);
+      }
     } catch (err) {
       console.error(err);
       this.setStatus("IFC-export mislukt (zie console).");
     }
   }
 
-  exportStl() {
+  async exportStl() {
     if (this.elements.length === 0) {
       this.setStatus("Nog geen elementen om als STL te exporteren.");
       return;
@@ -285,12 +289,16 @@ export class Studio {
     wrapper.scale.setScalar(1000);
     wrapper.add(this.authoredGroup.clone(true));
     wrapper.updateMatrixWorld(true);
-    const data = new STLExporter().parse(wrapper, { binary: true });
-    this.download(
-      new Blob([data as unknown as BlobPart], { type: "model/stl" }),
-      "open-3d-studio_componenten.stl",
-    );
-    this.setStatus(`STL geëxporteerd (${this.elements.length} elementen, eenheid mm).`);
+    const data = new STLExporter().parse(wrapper, { binary: true }) as unknown as DataView;
+    const bytes = new Uint8Array(data.buffer as ArrayBuffer);
+    if (
+      await this.saveAs(bytes, "open-3d-studio_componenten.stl", {
+        name: "STL (3D-print)",
+        extensions: ["stl"],
+      })
+    ) {
+      this.setStatus(`STL geëxporteerd (${this.elements.length} elementen, eenheid mm).`);
+    }
   }
 
   async exportPdf(viewLabel = "Huidig aanzicht") {
@@ -330,20 +338,88 @@ export class Studio {
       doc.text(`Datum: ${new Date().toLocaleDateString("nl-NL")}`, margin + frameW - 60, y + 6);
       doc.text(`Elementen: ${this.elements.length}`, margin + frameW - 60, y + 11);
 
-      doc.save("open-3d-studio_aanzicht.pdf");
-      this.setStatus("PDF geëxporteerd (huidig aanzicht op A3).");
+      if (
+        await this.saveAs(doc.output("blob"), "open-3d-studio_aanzicht.pdf", {
+          name: "PDF",
+          extensions: ["pdf"],
+        })
+      ) {
+        this.setStatus("PDF geëxporteerd (huidig aanzicht op A3).");
+      }
     } catch (err) {
       console.error(err);
       this.setStatus("PDF-export mislukt (zie console).");
     }
   }
 
-  private download(blob: Blob, filename: string) {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(a.href);
+  private async saveAs(
+    data: Uint8Array | Blob | string,
+    filename: string,
+    filter: FileFilter,
+  ): Promise<boolean> {
+    const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data;
+    const ok = await saveFileAs(bytes, filename, [filter]);
+    if (!ok) this.setStatus("Opslaan geannuleerd.");
+    return ok;
+  }
+
+  // ------------------------------------------------------------------ project
+  /** Serialiseert de volledige modelinhoud voor het .o3s-projectbestand. */
+  serializeProject(): Record<string, unknown> {
+    const v = (p: THREE.Vector3) => [p.x, p.y, p.z];
+    return {
+      version: 1,
+      app: "open-3d-studio",
+      origin: { ...this.origin },
+      elements: this.elements.map((e) => ({
+        id: e.id,
+        templateId: e.templateId,
+        name: e.name,
+        start: v(e.start),
+        end: v(e.end),
+        params: { ...e.params },
+      })),
+      lines: this.lines.map((l) => ({ id: l.id, a: v(l.a), b: v(l.b) })),
+      measures: this.measures.map((m) => ({ id: m.id, a: v(m.a), b: v(m.b), length: m.length })),
+      texts: this.texts.map((t) => ({ id: t.id, position: v(t.position), text: t.text })),
+    };
+  }
+
+  /** Herstelt de modelinhoud uit een .o3s-projectbestand. */
+  restoreProject(state: any) {
+    const v = (a: number[]) => new THREE.Vector3(a[0], a[1], a[2]);
+    this.cancelDrawing();
+    this.elements = (state.elements ?? []).map((e: any) => ({
+      ...e,
+      start: v(e.start),
+      end: v(e.end),
+      params: { ...e.params },
+    }));
+    this.lines = (state.lines ?? []).map((l: any) => ({ ...l, a: v(l.a), b: v(l.b) }));
+    this.measures = (state.measures ?? []).map((m: any) => ({ ...m, a: v(m.a), b: v(m.b) }));
+    this.texts = (state.texts ?? []).map((t: any) => ({ ...t, position: v(t.position) }));
+    this.origin = state.origin ?? { x: 0, y: 0, z: 0 };
+    this.elementCounters.clear();
+    for (const el of this.elements) {
+      this.elementCounters.set(el.templateId, (this.elementCounters.get(el.templateId) ?? 0) + 1);
+    }
+    this.selectedId = null;
+    this.refreshOriginHelper();
+    this.rebuildAuthored();
+    this.rebuildLines();
+    this.rebuildMeasures();
+    this.rebuildTexts();
+    this.emitElements();
+    this.callbacks.onSelectionChanged?.(null);
+    this.zoomAll();
+    this.setStatus(`Project geladen: ${this.elements.length} element(en).`);
+  }
+
+  /** Achtergrondkleur van de 3D-omgeving per thema. */
+  setTheme(theme: "dark" | "light") {
+    this.world.scene.three.background = new THREE.Color(
+      theme === "light" ? "#e9e5df" : "#211d1a",
+    );
   }
 
   // ------------------------------------------------------------------ sheets
@@ -365,7 +441,11 @@ export class Studio {
         sheet,
       );
       if (download) {
-        this.download(blob, `${sheet.number}_${sheet.name.replace(/\s+/g, "-")}.pdf`);
+        const ok = await this.saveAs(blob, `${sheet.number}_${sheet.name.replace(/\s+/g, "-")}.pdf`, {
+          name: "PDF",
+          extensions: ["pdf"],
+        });
+        if (!ok) return 0;
       }
       this.setStatus(`Sheet "${sheet.name}" geëxporteerd als PDF (${sheet.format}).`);
       return blob.size;

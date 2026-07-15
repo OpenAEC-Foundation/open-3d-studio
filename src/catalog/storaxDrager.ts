@@ -1,4 +1,4 @@
-import type { ComponentTemplate, ParamValues, SolidBox } from "../core/types";
+﻿import type { ComponentTemplate, ParamValues, SolidBox } from "../core/types";
 
 /** Storax drager (kokerprofiel).
  *
@@ -25,7 +25,7 @@ export const storaxDrager: ComponentTemplate = {
   name: "Storax drager (koker)",
   category: "Dragers",
   manufacturer: "Storax",
-  nlSfb: "22.2",
+  nlSfb: "22.21",
   material: "Staal, gepoedercoat",
   ifcEntity: "IfcBeam",
 

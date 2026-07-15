@@ -1,6 +1,6 @@
 [package]
 name = "open-3d-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open source 3D-modelleerstudio met IFC als native output"
 authors = ["Open 3D Studio contributors"]
 license = "MIT"
@@ -10,7 +10,9 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+base64 = "0.22"
 
 [profile.release]
 codegen-units = 1

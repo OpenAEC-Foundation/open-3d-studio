@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Basisrechten voor het hoofdvenster: kernfuncties en bestandsdialogen",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

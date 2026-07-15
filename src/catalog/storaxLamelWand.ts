@@ -1,4 +1,4 @@
-import type { ComponentTemplate, ParamValues, SolidBox } from "../core/types";
+﻿import type { ComponentTemplate, ParamValues, SolidBox } from "../core/types";
 
 /** Storax rooster-lamelwand.
  *
@@ -26,7 +26,7 @@ export const storaxLamelWand: ComponentTemplate = {
   name: "Storax rooster-lamelwand",
   category: "Roosterwanden",
   manufacturer: "Storax",
-  nlSfb: "22.2",
+  nlSfb: "22.21",
   material: "Staal, gepoedercoat",
   ifcEntity: "IfcWall",
 
