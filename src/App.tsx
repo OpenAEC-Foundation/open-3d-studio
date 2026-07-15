@@ -74,6 +74,7 @@ export default function App() {
     spacingY: 5,
   });
   const [maxPaneel, setMaxPaneel] = useState(3000);
+  const [lengthDraft, setLengthDraft] = useState("");
   const [ilsReport, setIlsReport] = useState<
     { eis: string; status: "ok" | "let-op" | "fout"; toelichting: string }[] | null
   >(null);
@@ -102,9 +103,19 @@ export default function App() {
           if (el) {
             setTemplateId(el.templateId);
             setParams({ ...el.params });
+            setLengthDraft(
+              String(Math.round(Math.hypot(el.end.x - el.start.x, el.end.z - el.start.z) * 1000)),
+            );
           }
+        } else {
+          // paneel terug in de pas met de actieve teken-instellingen van de engine
+          setTemplateId(studio.activeTemplateId);
+          setParams({ ...studio.currentParams });
         }
       },
+      onOriginChanged: (o) =>
+        setOrigin({ x: Math.round(o.x * 1000), y: Math.round(o.y * 1000), z: Math.round(o.z * 1000) }),
+      onGeoRefChanged: setGeoRef,
       onStoreysChanged: (s, activeId) => {
         setStoreys(s);
         setActiveStoreyId(activeId);
@@ -517,10 +528,19 @@ export default function App() {
                   <span className="param-input">
                     <input
                       type="number"
-                      value={selectedLengthMm}
+                      value={lengthDraft}
                       min={50}
                       step={10}
-                      onChange={(e) => studio()?.setElementLength(selected.id, Number(e.target.value))}
+                      onChange={(e) => {
+                        // kladwaarde: tussenstanden (< 50 mm) niet naar de engine sturen,
+                        // zodat het veld niet terugspringt tijdens het typen
+                        setLengthDraft(e.target.value);
+                        const mm = Number(e.target.value);
+                        if (Number.isFinite(mm) && mm >= 50) {
+                          studio()?.setElementLength(selected.id, mm);
+                        }
+                      }}
+                      onBlur={() => setLengthDraft(String(selectedLengthMm))}
                     />
                     <em>mm</em>
                   </span>

@@ -1,43 +1,50 @@
-# Open 3D Studio v0.3.0 — de grote sprong: alle vier de planfasen
+# Open 3D Studio v0.3.1 — ultracode-hersteld
 
-Deze release werkt het volledige gefaseerde plan uit [PLAN.md](PLAN.md) af, in eerste
-werkende versie. Installeren over een eerdere versie heen kan gewoon.
+Alle **32 bevestigde bevindingen** uit de multi-agent ultracode-controle van v0.3.0
+(108 agents: 6 onderzoeksdimensies, elke bevinding adversarieel geverifieerd door
+3 onafhankelijke controleurs) zijn in deze release opgelost en per faalscenario hertest.
 
-## Fase 1 — Modelleerkern
+## Belangrijkste fixes
 
-- **Verdiepingen** met BIM basis ILS-naamgeving ("00 begane grond"), peilen, actieve
-  bouwlaag als tekenvlak; export met correcte `IfcBuildingStorey`-structuur
-- **Stramienen** (assen 1…n / A…) met snappen op snijpunten en `IfcGrid`-export
-- **IfcTypes**: elk template + typeparameters wordt een `IfcWallType`/`IfcBeamType`/
-  `IfcPlateType`, instanties gekoppeld via `IfcRelDefinesByType`
-- **Sparingen** in wandvormige elementen: geometrie wordt doorsneden én er wordt een
-  `IfcOpeningElement` + `IfcRelVoidsElement` geëxporteerd
-- **Verslepen** van het geselecteerde element, **kopiëren**, **undo/redo** (Ctrl+Z/Y)
-- **IFC heropenen**: eerder geëxporteerde IFC's worden weer bewerkbare elementen (round-trip)
+**DXF-import**
+- Bogen > 180° (bulge > 1) kregen hun middelpunt aan de verkeerde kant van de koorde
+- Geroteerde/geschaalde blokverwijzingen (INSERT) stonden verkeerd doordat het
+  basispunt niet mee-transformeerde — de import werkt nu met affiene matrices,
+  wat ook geneste en gespiegelde blokken correct maakt
+- Ellipsbogen die parameter 0 kruisen draaiden om
 
-## Fase 2 — Documentatie & productie
+**Modelleren & undo**
+- IFC heropenen herstelt nu ook de verdiepingsindeling (naam + peil worden
+  meegeschreven en teruggelezen)
+- Draaien en lengte wijzigen maken nu een undo-stap aan; gethrottlede wijzigingen
+  wissen de redo-stack correct; klikken op een al geselecteerd element vervuilt de
+  undo-geschiedenis niet meer
+- Slepen: geen parallaxsprongen meer (sleepvlak op elementpeil), loslaten buiten het
+  canvas laat de camera niet meer vergrendeld achter
+- Ctrl+Z in tekstvelden doet tekst-undo, geen model-undo
+- Undo synchroniseert nu ook nulpunt/georeferentie met het zijpaneel; deselecteren
+  zet het parameterpaneel terug in de pas met de tekeninstellingen
+- Het lengteveld corrumpeert getypte waarden niet meer
 
-- **Merk-/posnummering** (Tekla-principe): identieke elementen delen een merk (W01, P01, B01)
-- **Elementeren** (HSBcad-principe): productierapport-PDF met panelen op maximale breedte
-  en zaag-/stuklijsten per paneel
-- **2D-DXF-export** van het bovenaanzicht (footprints met merklabels, lijnen, maten, lagen)
-- **Sheets**: maatvoering als vector op ware schaal, schaalbalk en noordpijl per venster
+**IFC & BIM basis ILS**
+- Eigen property sets heten nu `Storax_…` — de prefix `Pset_` is gereserveerd voor
+  buildingSMART-standaardpsets
+- `LoadBearing`/`IsExternal` per template instelbaar; de drager staat op
+  LoadBearing=false (systeemdrager, geen hoofddraagconstructie — consistent met NL-SfB 22.21)
+- Roosterpaneel: `IfcPlate.USERDEFINED` met ObjectType (CURTAIN_PANEL impliceert vliesgevel)
+- IfcTypes krijgen eigen typenummers in plaats van een (soms onjuist) merk
+- Merknummering is tekenrichting-onafhankelijk; de ILS-controle toetst nu ook de
+  pset-naamgeving en de consistentie dragend/NL-SfB
 
-## Fase 3 — Kwaliteit & samenwerking
+**Desktop & productie**
+- Bestandsoverdracht in 8MB-chunks en asynchrone Rust-commando's: grote IFC's
+  crashen of bevriezen de app niet meer; devtools uit in release-builds
+- Elementeren: een sparing over een paneelgrens snijdt nu álle betrokken panelen
+- BCF-export schrijft een correcte OrthogonalCamera bij 2D-aanzichten
+- Een build zonder wasm-bestanden faalt nu hard in plaats van stil een kapotte
+  installer op te leveren
 
-- **Ingebouwde BIM basis ILS-controle** met rapportvenster (Start → ILS-controle)
-- **BCF 2.1-issues** exporteren met camera-standpunt en schermafbeelding
-- **RD-georeferentie** (EPSG:28992): `IfcMapConversion` + `IfcProjectedCRS` in de export
+## Installatie
 
-## Fase 4 — Ecosysteem & AI
-
-- **Componentpresets** opslaan en laden (.o3st)
-- **AI-modelleerassistent (experimenteel)**: beschrijf in gewone taal wat je wilt plaatsen;
-  werkt met je eigen Claude API-sleutel (console.anthropic.com), die lokaal blijft
-
-## Bewust nog niet in deze release
-
-- Native **DWG** lezen (vergt een Rust/WASM-parserproject; DXF werkt) en 2D-DXF van gevels
-- **Code signing** van de installer (certificaat vereist) en **auto-update**
-- Statusmeldingen zijn nog Nederlandstalig in de EN-modus
-- Interactief bewerken van elementen uit andere (niet-O3S) IFC-bestanden
+Download `Open-3D-Studio_0.3.1_x64-setup.exe` en installeer over de vorige versie heen
+(SmartScreen: "Meer informatie" → "Toch uitvoeren").

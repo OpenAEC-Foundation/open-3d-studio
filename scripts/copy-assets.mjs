@@ -16,12 +16,24 @@ const copies = [
   ["node_modules/@thatopen/fragments/dist/Worker/worker.mjs", "public/fragments-worker.mjs"],
 ];
 
+// web-ifc.wasm en de fragments-worker zijn onmisbaar: zonder deze bestanden
+// start de app wel, maar kan hij geen enkel IFC laden of schrijven.
+const verplicht = new Set([
+  "node_modules/web-ifc/web-ifc.wasm",
+  "node_modules/@thatopen/fragments/dist/Worker/worker.mjs",
+]);
+
+let fataal = false;
 for (const [from, to] of copies) {
   const src = join(root, from);
   if (existsSync(src)) {
     cpSync(src, join(root, to));
     console.log(`copied ${from} -> ${to}`);
+  } else if (verplicht.has(from)) {
+    console.error(`FOUT: verplicht bestand ontbreekt: ${from} — draai eerst npm install`);
+    fataal = true;
   } else {
     console.warn(`NOT FOUND (skipped): ${from}`);
   }
 }
+if (fataal) process.exit(1);

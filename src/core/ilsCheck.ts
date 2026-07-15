@@ -35,10 +35,10 @@ export function checkIls(elements: PlacedElement[], storeys: Storey[]): IlsBevin
     add("Bouwlaagkoppeling", "ok", "Alle elementen zijn aan een bouwlaag gekoppeld.");
   }
 
-  // per gebruikt template: entiteit, NL-SfB, materiaal
+  // per gebruikt template: entiteit, NL-SfB, materiaal, pset-naamgeving, consistentie
   const gebruikt = [...new Set(elements.map((e) => e.templateId))].map((id) => getTemplate(id));
   for (const t of gebruikt) {
-    add("Juiste entiteit", "ok", `${t.name} → ${t.ifcEntity} met TypeEnumeration.`);
+    add("Juiste entiteit", "ok", `${t.name} → ${t.ifcEntity} met TypeEnumeration (ontwerpgarantie van het template).`);
     if (t.nlSfb && /^\d{2}\.\d{2}$/.test(t.nlSfb)) {
       add("NL-SfB (viercijferig)", "ok", `${t.name}: ${t.nlSfb}.`);
     } else if (t.nlSfb) {
@@ -48,6 +48,16 @@ export function checkIls(elements: PlacedElement[], storeys: Storey[]): IlsBevin
     }
     if (t.material) add("Materiaal", "ok", `${t.name}: ${t.material}.`);
     else add("Materiaal", "fout", `${t.name}: geen materiaal — vul material in het template in.`);
+    // eigen psets mogen de gereserveerde buildingSMART-prefix niet gebruiken
+    if (/^Pset_/i.test(t.psetName)) {
+      add("Pset-naamgeving", "fout", `${t.name}: eigen property set "${t.psetName}" gebruikt de gereserveerde prefix "Pset_".`);
+    } else {
+      add("Pset-naamgeving", "ok", `${t.name}: eigen pset "${t.psetName}" zonder gereserveerde prefix.`);
+    }
+    // LoadBearing hoort te sporen met de NL-SfB-hoofdgroep (dragend vs niet-dragend)
+    if (t.loadBearing && t.nlSfb?.startsWith("22.2")) {
+      add("Consistentie dragend/NL-SfB", "let-op", `${t.name}: LoadBearing=true maar NL-SfB ${t.nlSfb} (niet-constructieve binnenwanden).`);
+    }
   }
 
   // naam & type
@@ -65,11 +75,11 @@ export function checkIls(elements: PlacedElement[], storeys: Storey[]): IlsBevin
       : "Geen sparingen in het model.",
   );
 
-  add("Geen proxies", "ok", "Er worden geen IfcBuildingElementProxy-objecten geëxporteerd.");
+  add("Geen proxies", "ok", "Er worden geen IfcBuildingElementProxy-objecten geëxporteerd (ontwerpgarantie).");
   add(
     "Basis-psets",
     "ok",
-    "LoadBearing en IsExternal (Pset_WallCommon e.d.) worden geëxporteerd. FireRating volgt als template-parameter.",
+    "LoadBearing en IsExternal (Pset_WallCommon e.d.) worden per template geëxporteerd. FireRating volgt als template-parameter.",
   );
 
   return bevindingen;

@@ -1,6 +1,6 @@
 [package]
 name = "open-3d-studio"
-version = "0.3.0"
+version = "0.3.1"
 description = "Open source 3D-modelleerstudio met IFC als native output"
 authors = ["Open 3D Studio contributors"]
 license = "MIT"
@@ -10,7 +10,9 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["devtools"] }
+# devtools bewust niet als feature: in debug-builds staat het standaard aan,
+# in release-builds hoort het uit (ultracode-bevinding)
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 base64 = "0.22"
 

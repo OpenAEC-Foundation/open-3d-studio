@@ -27,6 +27,7 @@ export const storaxDrager: ComponentTemplate = {
   manufacturer: "Storax",
   nlSfb: "22.21",
   material: "Staal, gepoedercoat",
+  loadBearing: false,
   ifcEntity: "IfcBeam",
 
   params: [
@@ -67,7 +68,7 @@ export const storaxDrager: ComponentTemplate = {
     return [{ cx: length / 2, cy: 0, zBottom: 0, dx: length, dy: b, dz: h }];
   },
 
-  psetName: "Pset_Storax_Drager",
+  psetName: "Storax_Drager",
   psetProps(length, p) {
     return {
       Fabrikant: "Storax",

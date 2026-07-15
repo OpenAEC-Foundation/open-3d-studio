@@ -3,27 +3,38 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 
-/// Leest een bestand en geeft het terug als base64 (voor IFC/DXF/projectbestanden).
+/// 8 MB binaire chunks: voorkomt de V8-stringlimiet bij grote IFC-bestanden.
+const CHUNK: usize = 8 * 1024 * 1024;
+
+/// Leest een bestand als base64-chunks. `async` zodat de UI-thread vrij blijft.
 #[tauri::command]
-fn read_file_b64(path: String) -> Result<String, String> {
-    std::fs::read(&path)
-        .map(|bytes| STANDARD.encode(bytes))
-        .map_err(|e| format!("Lezen van {path} mislukt: {e}"))
+async fn read_file_b64_chunks(path: String) -> Result<Vec<String>, String> {
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("Lezen van {path} mislukt: {e}"))?;
+    Ok(bytes.chunks(CHUNK).map(|c| STANDARD.encode(c)).collect())
 }
 
-/// Schrijft base64-inhoud naar een bestand (voor exports en projectbestanden).
+/// Schrijft base64-chunks naar een bestand. `async` zodat de UI-thread vrij blijft.
 #[tauri::command]
-fn write_file_b64(path: String, contents: String) -> Result<(), String> {
-    let bytes = STANDARD
-        .decode(contents)
-        .map_err(|e| format!("Ongeldige bestandsinhoud: {e}"))?;
-    std::fs::write(&path, bytes).map_err(|e| format!("Schrijven naar {path} mislukt: {e}"))
+async fn write_file_b64_chunks(path: String, chunks: Vec<String>) -> Result<(), String> {
+    let mut out: Vec<u8> = Vec::new();
+    for chunk in chunks {
+        out.extend(
+            STANDARD
+                .decode(chunk)
+                .map_err(|e| format!("Ongeldige bestandsinhoud: {e}"))?,
+        );
+    }
+    std::fs::write(&path, out).map_err(|e| format!("Schrijven naar {path} mislukt: {e}"))
 }
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![read_file_b64, write_file_b64])
+        .invoke_handler(tauri::generate_handler![
+            read_file_b64_chunks,
+            write_file_b64_chunks
+        ])
         .run(tauri::generate_context!())
         .expect("fout bij het starten van Open 3D Studio");
 }

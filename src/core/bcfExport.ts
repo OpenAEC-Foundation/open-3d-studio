@@ -95,6 +95,23 @@ export function makeBcfIssue(opts: {
   const d = ifc(dir);
   const u = ifc(up);
 
+  // orthografische camera's krijgen een OrthogonalCamera-element met de juiste schaal
+  const ortho = opts.camera as THREE.OrthographicCamera;
+  const isOrtho = (opts.camera as { isOrthographicCamera?: boolean }).isOrthographicCamera === true;
+  const cameraXml = isOrtho
+    ? `<OrthogonalCamera>
+    <CameraViewPoint><X>${p.x}</X><Y>${p.y}</Y><Z>${p.z}</Z></CameraViewPoint>
+    <CameraDirection><X>${d.x}</X><Y>${d.y}</Y><Z>${d.z}</Z></CameraDirection>
+    <CameraUpVector><X>${u.x}</X><Y>${u.y}</Y><Z>${u.z}</Z></CameraUpVector>
+    <ViewToWorldScale>${(ortho.top - ortho.bottom) / (ortho.zoom || 1)}</ViewToWorldScale>
+  </OrthogonalCamera>`
+    : `<PerspectiveCamera>
+    <CameraViewPoint><X>${p.x}</X><Y>${p.y}</Y><Z>${p.z}</Z></CameraViewPoint>
+    <CameraDirection><X>${d.x}</X><Y>${d.y}</Y><Z>${d.z}</Z></CameraDirection>
+    <CameraUpVector><X>${u.x}</X><Y>${u.y}</Y><Z>${u.z}</Z></CameraUpVector>
+    <FieldOfView>${(opts.camera as THREE.PerspectiveCamera).fov ?? 60}</FieldOfView>
+  </PerspectiveCamera>`;
+
   const version = `<?xml version="1.0" encoding="UTF-8"?>\n<Version VersionId="2.1"><DetailedVersion>2.1</DetailedVersion></Version>`;
   const markup = `<?xml version="1.0" encoding="UTF-8"?>
 <Markup>
@@ -111,12 +128,7 @@ export function makeBcfIssue(opts: {
 </Markup>`;
   const viewpoint = `<?xml version="1.0" encoding="UTF-8"?>
 <VisualizationInfo Guid="${vpGuid}">
-  <PerspectiveCamera>
-    <CameraViewPoint><X>${p.x}</X><Y>${p.y}</Y><Z>${p.z}</Z></CameraViewPoint>
-    <CameraDirection><X>${d.x}</X><Y>${d.y}</Y><Z>${d.z}</Z></CameraDirection>
-    <CameraUpVector><X>${u.x}</X><Y>${u.y}</Y><Z>${u.z}</Z></CameraUpVector>
-    <FieldOfView>60</FieldOfView>
-  </PerspectiveCamera>
+  ${cameraXml}
 </VisualizationInfo>`;
 
   const enc = new TextEncoder();

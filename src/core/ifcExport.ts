@@ -293,20 +293,24 @@ export async function exportElementsToIfc(
       shape,
       null,
     ] as const;
+    // LoadBearing/IsExternal per template instelbaar (BIM basis ILS); standaard false
+    const loadBearing = template.loadBearing ?? false;
+    const isExternal = template.isExternal ?? false;
     let product: IfcProductInstance;
     let commonPset: { name: string; props: Record<string, boolean> };
     switch (template.ifcEntity) {
       case "IfcBeam":
         product = new IFC4.IfcBeam(...common, IFC4.IfcBeamTypeEnum.BEAM);
-        commonPset = { name: "Pset_BeamCommon", props: { LoadBearing: true, IsExternal: false } };
+        commonPset = { name: "Pset_BeamCommon", props: { LoadBearing: loadBearing, IsExternal: isExternal } };
         break;
       case "IfcPlate":
-        product = new IFC4.IfcPlate(...common, IFC4.IfcPlateTypeEnum.CURTAIN_PANEL);
-        commonPset = { name: "Pset_PlateCommon", props: { LoadBearing: false, IsExternal: false } };
+        // USERDEFINED + ObjectType: een roosterpaneel is geen vliesgevelpaneel
+        product = new IFC4.IfcPlate(...common, IFC4.IfcPlateTypeEnum.USERDEFINED);
+        commonPset = { name: "Pset_PlateCommon", props: { LoadBearing: loadBearing, IsExternal: isExternal } };
         break;
       default:
         product = new IFC4.IfcWall(...common, IFC4.IfcWallTypeEnum.USERDEFINED);
-        commonPset = { name: "Pset_WallCommon", props: { LoadBearing: false, IsExternal: false } };
+        commonPset = { name: "Pset_WallCommon", props: { LoadBearing: loadBearing, IsExternal: isExternal } };
     }
     products.push(product);
     const storeyKey = el.storeyId && storeyMap.has(el.storeyId) ? el.storeyId : storeys[0].id;
@@ -370,6 +374,7 @@ export async function exportElementsToIfc(
     }
 
     // property set met alle parameters + merk + round-trip-data
+    const o3sStorey = storeys.find((s) => s.id === el.storeyId);
     const o3sData = JSON.stringify({
       templateId: el.templateId,
       name: el.name,
@@ -377,6 +382,9 @@ export async function exportElementsToIfc(
       end: [el.end.x, el.end.y, el.end.z],
       params: el.params,
       storeyId: el.storeyId,
+      // naam + peil zodat heropenen de verdiepingsindeling kan herstellen
+      storeyName: o3sStorey?.name,
+      storeyElevation: o3sStorey?.elevation,
       opening: el.opening ?? null,
     });
     const props = [
@@ -501,13 +509,17 @@ export async function exportElementsToIfc(
     );
   }
 
-  // -- IfcTypes: template + typeparameters = één type, instanties gekoppeld via RelDefinesByType --
+  // -- IfcTypes: template + typeparameters = één type, instanties gekoppeld via RelDefinesByType.
+  //    NB: het type krijgt een eigen volgnummer, géén merk — een merk hangt (via lengte)
+  //    aan instanties en één type kan meerdere merken omvatten. --
+  const typeCounters = new Map<string, number>();
   for (const [, group] of byType) {
     const t = group.template;
-    const typeName = label(`${t.name}${group.merk ? ` [${group.merk}]` : ""}`);
+    const nr = (typeCounters.get(t.id) ?? 0) + 1;
+    typeCounters.set(t.id, nr);
+    const typeName = label(`${t.name} type ${String(nr).padStart(2, "0")}`);
     const typeArgs = [
-      guid(), ownerHistory, typeName, null, null, null, null,
-      group.merk ? ident(group.merk) : null, label(t.name),
+      guid(), ownerHistory, typeName, null, null, null, null, null, label(t.name),
     ] as const;
     let typeEntity;
     switch (t.ifcEntity) {
@@ -515,7 +527,7 @@ export async function exportElementsToIfc(
         typeEntity = new IFC4.IfcBeamType(...typeArgs, IFC4.IfcBeamTypeEnum.BEAM);
         break;
       case "IfcPlate":
-        typeEntity = new IFC4.IfcPlateType(...typeArgs, IFC4.IfcPlateTypeEnum.CURTAIN_PANEL);
+        typeEntity = new IFC4.IfcPlateType(...typeArgs, IFC4.IfcPlateTypeEnum.USERDEFINED);
         break;
       default:
         typeEntity = new IFC4.IfcWallType(...typeArgs, IFC4.IfcWallTypeEnum.USERDEFINED);

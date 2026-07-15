@@ -48,6 +48,8 @@ export interface StudioCallbacks {
   onLayersChanged?: (layers: { name: string; visible: boolean }[]) => void;
   onStoreysChanged?: (storeys: Storey[], activeId: string) => void;
   onGridChanged?: (grid: GridConfig) => void;
+  onOriginChanged?: (origin: ProjectOrigin) => void;
+  onGeoRefChanged?: (geoRef: { enabled: boolean; rdX: number; rdY: number; napZ: number }) => void;
   onStatus?: (msg: string) => void;
 }
 
@@ -86,6 +88,8 @@ export class Studio {
   private lastUndoPush = 0;
 
   private dragging = false;
+  private dragMoved = false;
+  private dragPlaneY = 0;
   private dragLast: THREE.Vector3 | null = null;
 
   private authoredGroup = new THREE.Group();
@@ -282,6 +286,22 @@ export class Studio {
       }
       this.pushUndo();
       const v = (a: number[]) => new THREE.Vector3(a[0], a[1], a[2]);
+      // verdiepingen herstellen: eerst op id, dan op naam matchen, anders aanmaken
+      const resolveStorey = (d: any): string => {
+        if (this.storeys.some((s) => s.id === d.storeyId)) return d.storeyId;
+        if (d.storeyName) {
+          const byName = this.storeys.find((s) => s.name === d.storeyName);
+          if (byName) return byName.id;
+          const created: Storey = {
+            id: crypto.randomUUID(),
+            name: d.storeyName,
+            elevation: typeof d.storeyElevation === "number" ? d.storeyElevation : 0,
+          };
+          this.storeys.push(created);
+          return created.id;
+        }
+        return this.activeStoreyId;
+      };
       for (const d of data) {
         try {
           getTemplate(d.templateId);
@@ -297,10 +317,12 @@ export class Studio {
           start: v(d.start),
           end: v(d.end),
           params: { ...d.params },
-          storeyId: this.storeys.some((s) => s.id === d.storeyId) ? d.storeyId : this.activeStoreyId,
+          storeyId: resolveStorey(d),
           opening: d.opening ?? null,
         });
       }
+      this.storeys.sort((a, b) => a.elevation - b.elevation);
+      this.emitStoreys();
       this.rebuildAuthored();
       this.emitElements();
       this.zoomAll();
@@ -634,6 +656,8 @@ export class Studio {
     this.emitElements();
     this.emitStoreys();
     this.callbacks.onGridChanged?.(this.grid);
+    this.callbacks.onOriginChanged?.({ ...this.origin });
+    this.callbacks.onGeoRefChanged?.({ ...this.geoRef });
     this.callbacks.onSelectionChanged?.(null);
     if (!opts.silent) {
       this.zoomAll();
@@ -901,11 +925,11 @@ export class Studio {
    *  parameterveld) tot één undo-stap; losse handelingen krijgen elk een eigen stap. */
   private pushUndo(throttle = false) {
     const now = Date.now();
+    this.redoStack = []; // elke mutatie maakt de redo-geschiedenis ongeldig, ook gethrottlede
     if (throttle && now - this.lastUndoPush < 700 && this.undoStack.length > 0) return;
     this.lastUndoPush = now;
     this.undoStack.push(JSON.stringify(this.serializeProject()));
     if (this.undoStack.length > 50) this.undoStack.shift();
-    this.redoStack = [];
   }
 
   undo() {
@@ -1057,6 +1081,7 @@ export class Studio {
   rotateElement(id: string, deltaDeg: number) {
     const el = this.elements.find((e) => e.id === id);
     if (!el) return;
+    this.pushUndo();
     const angle = (deltaDeg * Math.PI) / 180;
     const dx = el.end.x - el.start.x;
     const dz = el.end.z - el.start.z;
@@ -1074,6 +1099,7 @@ export class Studio {
   setElementLength(id: string, lengthMm: number) {
     const el = this.elements.find((e) => e.id === id);
     if (!el) return;
+    this.pushUndo(true);
     const dx = el.end.x - el.start.x;
     const dz = el.end.z - el.start.z;
     const current = Math.hypot(dx, dz);
@@ -1134,40 +1160,49 @@ export class Studio {
         let obj: THREE.Object3D | null = hit?.object ?? null;
         while (obj && !obj.userData.elementId) obj = obj.parent;
         if (obj?.userData.elementId === this.selectedId) {
-          this.pushUndo();
           this.dragging = true;
-          this.dragLast = this.pickPoint(e);
+          this.dragMoved = false; // undo-stap pas bij echte verplaatsing
+          const el = this.elements.find((el) => el.id === this.selectedId);
+          this.dragPlaneY = el?.start.y ?? hit!.point.y;
+          this.dragLast = this.dragPoint(e);
           this.world.camera.controls.enabled = false;
         }
       }
     });
 
-    dom.addEventListener("pointerup", (e: PointerEvent) => {
+    // op window, zodat loslaten búíten het canvas de sleep ook netjes beëindigt
+    window.addEventListener("pointerup", (e: PointerEvent) => {
       if (e.button !== 0) return;
       if (this.dragging) {
         this.dragging = false;
         this.dragLast = null;
         this.world.camera.controls.enabled = true;
         this.pointerDownPos = null;
-        this.emitElements();
-        this.setStatus("Element verplaatst.");
+        if (this.dragMoved) {
+          this.emitElements();
+          this.setStatus("Element verplaatst.");
+        }
         return;
       }
       if (!this.pointerDownPos) return;
       const moved = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
       this.pointerDownPos = null;
-      if (moved > 5) return; // slepen = camera, geen klik
+      if (moved > 5 || e.target !== dom) return; // slepen = camera; klik moet op het canvas eindigen
       this.handleClick(e);
     });
 
     dom.addEventListener("pointermove", (e: PointerEvent) => {
       if (this.dragging && this.selectedId) {
         const el = this.elements.find((el) => el.id === this.selectedId);
-        const p = this.pickPoint(e);
+        const p = this.dragPoint(e);
         if (el && p && this.dragLast) {
           const delta = p.clone().sub(this.dragLast);
           delta.y = 0; // verslepen blijft op hetzelfde peil
           if (delta.lengthSq() > 0) {
+            if (!this.dragMoved) {
+              this.dragMoved = true;
+              this.pushUndo(); // NB: snapshot bevat de positie van vóór deze move
+            }
             el.start.add(delta);
             el.end.add(delta);
             this.dragLast = p;
@@ -1208,7 +1243,10 @@ export class Studio {
         this.setStatus("Tekenen gestopt.");
         return;
       }
-      const inInput = (e.target as HTMLElement)?.tagName === "INPUT";
+      const target = e.target as HTMLElement | null;
+      const inInput =
+        !!target &&
+        (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable);
       if (!inInput && (e.ctrlKey || e.metaKey)) {
         if (e.key.toLowerCase() === "z" && !e.shiftKey) {
           e.preventDefault();
@@ -1398,6 +1436,18 @@ export class Studio {
     this.selectElement(obj?.userData.elementId ?? null);
   }
 
+  /** Sleeppunt: altijd op het horizontale vlak van het element zelf, zodat de
+   *  straal niet op het versleepte element raycast (parallaxsprongen). */
+  private dragPoint(e: PointerEvent): THREE.Vector3 | null {
+    const ray = this.currentRay(e);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -this.dragPlaneY);
+    const out = new THREE.Vector3();
+    if (!ray.intersectPlane(plane, out)) return null;
+    out.x = Math.round(out.x / SNAP) * SNAP;
+    out.z = Math.round(out.z / SNAP) * SNAP;
+    return this.snapToGrid(out);
+  }
+
   /** Tekenvlak afhankelijk van het actieve aanzicht: horizontaal op het peil van de
    *  actieve verdieping, verticaal door het nulpunt. */
   private drawPlane(): THREE.Plane {
@@ -1435,9 +1485,9 @@ export class Studio {
     }
     if (!point) return null;
 
+    // alleen x/z snappen: y (peil) komt exact van het tekenvlak of het geraakte oppervlak
     point.x = Math.round(point.x / SNAP) * SNAP;
     point.z = Math.round(point.z / SNAP) * SNAP;
-    point.y = Math.round(point.y / SNAP) * SNAP;
     return this.snapToGrid(point);
   }
 
@@ -1663,7 +1713,15 @@ export class Studio {
         template.ifcEntity === "IfcBeam" ? "B" : template.ifcEntity === "IfcPlate" ? "P" : "W";
       const len = Math.round(Math.hypot(el.end.x - el.start.x, el.end.z - el.start.z) * 1000);
       const { basisHoogte: _basis, ...typeParams } = el.params as Record<string, unknown>;
-      const key = [el.templateId, len, JSON.stringify(typeParams), JSON.stringify(el.opening ?? null)].join("|");
+      // sparing tekenrichting-onafhankelijk maken: positie vanaf het dichtstbijzijnde uiteinde
+      const opKey = el.opening
+        ? {
+            b: Math.round(el.opening.breedte * 1000),
+            h: Math.round(el.opening.hoogte * 1000),
+            x: Math.round(Math.min(el.opening.xPos, len / 1000 - el.opening.xPos) * 1000),
+          }
+        : null;
+      const key = [el.templateId, len, JSON.stringify(typeParams), JSON.stringify(opKey)].join("|");
       let merk = groups.get(key);
       if (!merk) {
         const n = (counters.get(prefix) ?? 0) + 1;

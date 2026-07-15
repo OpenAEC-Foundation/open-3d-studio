@@ -12,13 +12,25 @@ export interface FileFilter {
   extensions: string[];
 }
 
+/** 8 MB per chunk (afgestemd op de Rust-kant): voorkomt de V8-stringlimiet
+ *  en houdt het geheugengebruik bij grote IFC-bestanden beheersbaar. */
+const CHUNK_BYTES = 8 * 1024 * 1024;
+
 function b64encode(bytes: Uint8Array): string {
   let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + step));
   }
   return btoa(bin);
+}
+
+function b64encodeChunks(bytes: Uint8Array): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += CHUNK_BYTES) {
+    chunks.push(b64encode(bytes.subarray(i, i + CHUNK_BYTES)));
+  }
+  return chunks.length > 0 ? chunks : [""];
 }
 
 function b64decode(s: string): Uint8Array {
@@ -41,7 +53,7 @@ export async function saveFileAs(
     const path = await save({ defaultPath: suggestedName, filters });
     if (!path) return false;
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("write_file_b64", { path, contents: b64encode(bytes) });
+    await invoke("write_file_b64_chunks", { path, chunks: b64encodeChunks(bytes) });
     return true;
   }
   const blob = new Blob([bytes as unknown as BlobPart]);
@@ -66,9 +78,9 @@ export async function openFilesDialog(
     const { invoke } = await import("@tauri-apps/api/core");
     const files: File[] = [];
     for (const path of paths) {
-      const b64 = await invoke<string>("read_file_b64", { path });
+      const chunks = await invoke<string[]>("read_file_b64_chunks", { path });
       const name = path.replace(/^.*[\\/]/, "");
-      files.push(new File([b64decode(b64) as unknown as BlobPart], name));
+      files.push(new File(chunks.map((c) => b64decode(c)) as unknown as BlobPart[], name));
     }
     return files;
   }
@@ -78,6 +90,7 @@ export async function openFilesDialog(
     input.multiple = multiple;
     input.accept = filters.flatMap((f) => f.extensions.map((e) => `.${e}`)).join(",");
     input.onchange = () => resolve(Array.from(input.files ?? []));
+    input.oncancel = () => resolve([]); // annuleren laat de Promise niet hangen
     input.click();
   });
 }

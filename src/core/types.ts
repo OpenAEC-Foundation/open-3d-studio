@@ -43,6 +43,10 @@ export interface ComponentTemplate {
   nlSfb?: string;
   /** materiaalnaam voor IfcMaterial (BIM basis ILS) */
   material?: string;
+  /** dragend element (Pset_*Common LoadBearing); standaard false */
+  loadBearing?: boolean;
+  /** buitentoepassing (Pset_*Common IsExternal); standaard false */
+  isExternal?: boolean;
   /** IFC-entiteit waarnaar dit component exporteert */
   ifcEntity: "IfcWall" | "IfcBeam" | "IfcPlate";
   params: ParamDef[];

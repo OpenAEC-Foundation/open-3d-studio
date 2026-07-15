@@ -44,18 +44,30 @@ export function elementeer(el: PlacedElement, maxPaneelbreedteMm: number): Eleme
   const template = getTemplate(el.templateId);
   const totale = Math.hypot(el.end.x - el.start.x, el.end.z - el.start.z);
   const maxB = Math.max(0.3, maxPaneelbreedteMm / 1000);
-  const aantalPanelen = Math.max(1, Math.ceil(totale / maxB));
+  // epsilon voorkomt dat een wand van exact n×max door floating-point in n+1 panelen splitst
+  const aantalPanelen = Math.max(1, Math.ceil(totale / maxB - 1e-9));
   const paneelBreedte = totale / aantalPanelen;
 
   const panelen: Paneel[] = [];
   for (let i = 0; i < aantalPanelen; i++) {
-    // sparing geldt alleen voor het paneel waarin die valt (vereenvoudigd: hele wand-solids
-    // per paneel opnieuw genereren op paneelbreedte, sparing alleen meenemen indien binnen bereik)
+    // sparing per paneel: het overlappende deel van de sparing wordt op elk
+    // betrokken paneel toegepast (geknipt op de paneelgrenzen)
     const van = i * paneelBreedte;
-    const opening =
-      el.opening && el.opening.xPos > van && el.opening.xPos < van + paneelBreedte
-        ? { ...el.opening, xPos: el.opening.xPos - van }
-        : null;
+    const tot = van + paneelBreedte;
+    let opening: typeof el.opening = null;
+    if (el.opening) {
+      const opVan = el.opening.xPos - el.opening.breedte / 2;
+      const opTot = el.opening.xPos + el.opening.breedte / 2;
+      const overlapVan = Math.max(opVan, van);
+      const overlapTot = Math.min(opTot, tot);
+      if (overlapTot - overlapVan > 0.001) {
+        opening = {
+          xPos: (overlapVan + overlapTot) / 2 - van,
+          breedte: overlapTot - overlapVan,
+          hoogte: el.opening.hoogte,
+        };
+      }
+    }
     const solids = elementSolids(template, paneelBreedte, el.params, opening);
     panelen.push({
       nummer: `${el.merk ?? "E"}-${String(i + 1).padStart(2, "0")}`,

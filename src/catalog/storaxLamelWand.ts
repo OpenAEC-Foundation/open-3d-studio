@@ -109,7 +109,7 @@ export const storaxLamelWand: ComponentTemplate = {
     return solids;
   },
 
-  psetName: "Pset_Storax_RoosterLamelwand",
+  psetName: "Storax_RoosterLamelwand",
   psetProps(length, p) {
     return {
       Fabrikant: "Storax",

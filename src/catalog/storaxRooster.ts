@@ -96,7 +96,7 @@ export const storaxRooster: ComponentTemplate = {
     return solids;
   },
 
-  psetName: "Pset_Storax_Rooster",
+  psetName: "Storax_Rooster",
   psetProps(length, p) {
     return {
       Fabrikant: "Storax",
