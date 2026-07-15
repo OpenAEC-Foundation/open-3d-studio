@@ -1,0 +1,493 @@
+/* Open 3D Studio — huisstijl volgens het OpenAEC style book
+   Primair: Construction Amber #D97706 · koppen Space Grotesk · lopende tekst Inter */
+
+:root {
+  --amber: #d97706;
+  --amber-soft: #f59e0b;
+  --bg: #1c1917;
+  --bg-panel: #26221f;
+  --bg-input: #14110f;
+  --border: #3f3a35;
+  --text: #f5f0ea;
+  --text-muted: #a8a29e;
+  --danger: #dc2626;
+  --font-head: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ---------- header ---------- */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 16px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-mark {
+  width: 14px;
+  height: 14px;
+  background: var(--amber);
+  border-radius: 3px;
+  transform: rotate(45deg);
+}
+
+.brand h1 {
+  font-family: var(--font-head);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--amber-soft);
+  border: 1px solid var(--amber);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.header-note {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* ---------- hoofdindeling ---------- */
+.main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 52px;
+  padding: 10px 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+}
+
+.tool {
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.tool:hover {
+  border-color: var(--border);
+}
+
+.tool.active {
+  background: var(--amber);
+  color: #1c1006;
+  border-color: var(--amber);
+}
+
+.toolbar-sep {
+  width: 24px;
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.viewport-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.viewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.viewport canvas {
+  display: block;
+}
+
+.view-overlay {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  gap: 4px;
+  background: rgba(38, 34, 31, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.view-btn {
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.view-btn:hover {
+  border-color: var(--border);
+}
+
+.view-btn.active {
+  background: var(--amber);
+  color: #1c1006;
+}
+
+/* ---------- zijpaneel ---------- */
+.sidepanel {
+  width: 300px;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sidepanel h2 {
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--amber-soft);
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.param-row > span:first-child {
+  color: var(--text-muted);
+}
+
+.param-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.param-input em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.params input[type="number"],
+.params select {
+  width: 96px;
+  padding: 5px 7px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.params select {
+  width: 148px;
+}
+
+.params input:focus,
+.params select:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+
+button.danger {
+  margin-top: 10px;
+  width: 100%;
+  padding: 7px;
+  font: inherit;
+  color: #fff;
+  background: var(--danger);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-btn {
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.list-btn.active {
+  border-color: var(--amber);
+  color: var(--amber-soft);
+}
+
+.template-select {
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.selected-tools {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.selected-tools input[type="number"] {
+  width: 96px;
+  padding: 5px 7px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.rotate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rotate-row > span {
+  color: var(--text-muted);
+}
+
+.rotate-row > div {
+  display: flex;
+  gap: 4px;
+}
+
+button.mini {
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button.mini:hover {
+  border-color: var(--amber);
+}
+
+.btn-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.origin-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.origin-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.origin-row label span {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.origin-row input {
+  width: 68px;
+  padding: 5px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.origin-row em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding-bottom: 7px;
+}
+
+.qty-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.qty-table th,
+.qty-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.qty-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.qty-table td:nth-child(2),
+.qty-table td:nth-child(3),
+.qty-table th:nth-child(2),
+.qty-table th:nth-child(3) {
+  text-align: right;
+}
+
+.sheet-editor {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sheet-editor input[type="text"],
+.sheet-editor select {
+  width: 120px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.viewport-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.viewport-row select {
+  flex: 1;
+  width: auto;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+button.mini.accent {
+  background: var(--amber);
+  color: #1c1006;
+  border-color: var(--amber);
+}
+
+/* ---------- statusbalk ---------- */
+.statusbar {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+}

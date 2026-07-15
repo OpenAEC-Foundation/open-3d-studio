@@ -1,0 +1,7 @@
+node_modules/
+dist/
+public/wasm/
+public/fragments-worker.mjs
+src-tauri/target/
+src-tauri/gen/
+*.local
