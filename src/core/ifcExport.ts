@@ -1,6 +1,7 @@
 import * as WebIFC from "web-ifc";
-import type { PlacedElement, ProjectOrigin } from "./types";
+import type { GridConfig, PlacedElement, ProjectOrigin, Storey } from "./types";
 import { getTemplate } from "../catalog/registry";
+import { elementSolids } from "./meshBuilder";
 
 const { IFC4 } = WebIFC;
 
@@ -27,10 +28,19 @@ const MM = 0.001;
  */
 export async function exportElementsToIfc(
   elements: PlacedElement[],
-  opts: { origin?: ProjectOrigin; projectName?: string } = {},
+  opts: {
+    origin?: ProjectOrigin;
+    projectName?: string;
+    storeys?: Storey[];
+    grid?: GridConfig;
+  } = {},
 ): Promise<Uint8Array> {
   const projectName = opts.projectName ?? "Open 3D Studio — Storax componenten";
   const origin = opts.origin ?? { x: 0, y: 0, z: 0 };
+  const storeys: Storey[] =
+    opts.storeys && opts.storeys.length > 0
+      ? [...opts.storeys].sort((a, b) => a.elevation - b.elevation)
+      : [{ id: "storey-0", name: "00 begane grond", elevation: 0 }];
   const api = new WebIFC.IfcAPI();
   api.SetWasmPath("/wasm/", true);
   await api.Init();
@@ -132,16 +142,30 @@ export async function exportElementsToIfc(
     null, null, null,
   );
 
-  const storeyPlacement = new IFC4.IfcLocalPlacement(
-    buildingPlacement,
-    new IFC4.IfcAxis2Placement3D(pt3(0, 0, 0), null, null),
-  );
-  const storey = new IFC4.IfcBuildingStorey(
-    guid(), ownerHistory, label("Begane grond"), null, null,
-    storeyPlacement, null, null,
-    IFC4.IfcElementCompositionEnum.ELEMENT,
-    len(0),
-  );
+  // verdiepingen conform BIM basis ILS-naamgeving; peilen relatief aan het nulpunt
+  const storeyMap = new Map<
+    string,
+    {
+      entity: InstanceType<typeof IFC4.IfcBuildingStorey>;
+      placement: InstanceType<typeof IFC4.IfcLocalPlacement>;
+      elevation: number;
+    }
+  >();
+  for (const s of storeys) {
+    const elevation = s.elevation - origin.z;
+    const placement = new IFC4.IfcLocalPlacement(
+      buildingPlacement,
+      new IFC4.IfcAxis2Placement3D(pt3(0, 0, elevation), null, null),
+    );
+    const entity = new IFC4.IfcBuildingStorey(
+      guid(), ownerHistory, label(s.name), null, null,
+      placement, null, null,
+      IFC4.IfcElementCompositionEnum.ELEMENT,
+      len(elevation),
+    );
+    storeyMap.set(s.id, { entity, placement, elevation: s.elevation });
+  }
+  const firstStorey = storeyMap.get(storeys[0].id)!;
 
   // -- kleuren: één surface style per unieke kleur --
   const styleCache = new Map<string, InstanceType<typeof IFC4.IfcSurfaceStyle>>();
@@ -177,6 +201,8 @@ export async function exportElementsToIfc(
   const styledItems: WebIFC.IfcLineObject[] = [];
   const byNlSfb = new Map<string, IfcProductInstance[]>();
   const byMaterial = new Map<string, IfcProductInstance[]>();
+  const byStorey = new Map<string, IfcProductInstance[]>();
+  const byType = new Map<string, { products: IfcProductInstance[]; template: ReturnType<typeof getTemplate>; merk: string }>();
 
   for (const el of elements) {
     const template = getTemplate(el.templateId);
@@ -185,23 +211,24 @@ export async function exportElementsToIfc(
     const length = Math.hypot(dx, dz);
     if (length < 1e-6) continue;
 
+    const storeyRef = storeyMap.get(el.storeyId ?? "") ?? firstStorey;
     const baseZ =
       el.start.y + (typeof el.params.basisHoogte === "number" ? el.params.basisHoogte : 0) * MM;
 
-    // plaatsing: three (x, y-omhoog, z) -> IFC (x, -z, y), relatief aan het nulpunt
+    // plaatsing: three (x, y-omhoog, z) -> IFC (x, -z, y), relatief aan nulpunt en verdieping
     const productPlacement = new IFC4.IfcLocalPlacement(
-      storeyPlacement,
+      storeyRef.placement,
       new IFC4.IfcAxis2Placement3D(
-        pt3(el.start.x - origin.x, -el.start.z - origin.y, baseZ - origin.z),
+        pt3(el.start.x - origin.x, -el.start.z - origin.y, baseZ - storeyRef.elevation),
         dir3(0, 0, 1),
         dir3(dx / length, -dz / length, 0),
       ),
     );
 
-    // geometrie: dezelfde solids-definitie als de 3D-weergave
+    // geometrie: dezelfde solids-definitie als de 3D-weergave (incl. sparing)
     const items: InstanceType<typeof IFC4.IfcExtrudedAreaSolid>[] = [];
     const colorHex = template.color(el.params);
-    for (const s of template.solids(length, el.params)) {
+    for (const s of elementSolids(template, length, el.params, el.opening)) {
       const profile = new IFC4.IfcRectangleProfileDef(
         IFC4.IfcProfileTypeEnum.AREA,
         null,
@@ -254,6 +281,54 @@ export async function exportElementsToIfc(
         commonPset = { name: "Pset_WallCommon", props: { LoadBearing: false, IsExternal: false } };
     }
     products.push(product);
+    const storeyKey = el.storeyId && storeyMap.has(el.storeyId) ? el.storeyId : storeys[0].id;
+    byStorey.set(storeyKey, [...(byStorey.get(storeyKey) ?? []), product]);
+
+    // type-groepering (IfcTypes): zelfde template + zelfde type-parameters = zelfde type
+    const { basisHoogte: _b, ...typeParams } = el.params as Record<string, unknown>;
+    const typeKey = `${el.templateId}|${JSON.stringify(typeParams)}`;
+    const typeGroup = byType.get(typeKey) ?? { products: [], template, merk: el.merk ?? "" };
+    typeGroup.products.push(product);
+    if (el.merk) typeGroup.merk = el.merk;
+    byType.set(typeKey, typeGroup);
+
+    // sparing als IfcOpeningElement (geometrie is al doorgesneden; semantiek conform ILS)
+    if (el.opening) {
+      const op = el.opening;
+      const depth = template.depth(el.params) + 0.02;
+      const openingPlacement = new IFC4.IfcLocalPlacement(
+        productPlacement,
+        new IFC4.IfcAxis2Placement3D(pt3(op.xPos, 0, 0), null, null),
+      );
+      const openingSolid = new IFC4.IfcExtrudedAreaSolid(
+        new IFC4.IfcRectangleProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA,
+          null,
+          new IFC4.IfcAxis2Placement2D(pt2(0, 0), null),
+          plen(op.breedte),
+          plen(depth),
+        ),
+        new IFC4.IfcAxis2Placement3D(pt3(0, 0, 0), null, null),
+        dir3(0, 0, 1),
+        plen(op.hoogte),
+      );
+      const openingElement = new IFC4.IfcOpeningElement(
+        guid(),
+        ownerHistory,
+        label(`Sparing ${el.name}`),
+        null,
+        null,
+        openingPlacement,
+        new IFC4.IfcProductDefinitionShape(null, null, [
+          new IFC4.IfcShapeRepresentation(context, label("Body"), label("SweptSolid"), [openingSolid]),
+        ]),
+        null,
+        IFC4.IfcOpeningElementTypeEnum.OPENING,
+      );
+      relRoots.push(
+        new IFC4.IfcRelVoidsElement(guid(), ownerHistory, null, null, product, openingElement),
+      );
+    }
 
     if (template.nlSfb) {
       const list = byNlSfb.get(template.nlSfb) ?? [];
@@ -266,16 +341,29 @@ export async function exportElementsToIfc(
       byMaterial.set(template.material, list);
     }
 
-    // property set met alle parameters
-    const props = Object.entries(template.psetProps(length, el.params)).map(
-      ([key, value]) =>
-        new IFC4.IfcPropertySingleValue(
-          ident(key),
-          null,
-          typeof value === "number" ? real(value) : label(String(value)),
-          null,
-        ),
-    );
+    // property set met alle parameters + merk + round-trip-data
+    const o3sData = JSON.stringify({
+      templateId: el.templateId,
+      name: el.name,
+      start: [el.start.x, el.start.y, el.start.z],
+      end: [el.end.x, el.end.y, el.end.z],
+      params: el.params,
+      storeyId: el.storeyId,
+      opening: el.opening ?? null,
+    });
+    const props = [
+      ...Object.entries(template.psetProps(length, el.params)).map(
+        ([key, value]) =>
+          new IFC4.IfcPropertySingleValue(
+            ident(key),
+            null,
+            typeof value === "number" ? real(value) : label(String(value)),
+            null,
+          ),
+      ),
+      new IFC4.IfcPropertySingleValue(ident("Merk"), null, label(el.merk ?? ""), null),
+      new IFC4.IfcPropertySingleValue(ident("O3S_Data"), null, text(o3sData), null),
+    ];
     const pset = new IFC4.IfcPropertySet(
       guid(),
       ownerHistory,
@@ -361,9 +449,17 @@ export async function exportElementsToIfc(
   );
   api.WriteLine(
     modelID,
-    new IFC4.IfcRelAggregates(guid(), ownerHistory, null, null, building, [storey]),
+    new IFC4.IfcRelAggregates(
+      guid(),
+      ownerHistory,
+      null,
+      null,
+      building,
+      [...storeyMap.values()].map((s) => s.entity),
+    ),
   );
-  if (products.length > 0) {
+  for (const [storeyId, storeyProducts] of byStorey) {
+    if (storeyProducts.length === 0) continue;
     api.WriteLine(
       modelID,
       new IFC4.IfcRelContainedInSpatialStructure(
@@ -371,8 +467,66 @@ export async function exportElementsToIfc(
         ownerHistory,
         label("Elementen op verdieping"),
         null,
-        products,
-        storey,
+        storeyProducts,
+        storeyMap.get(storeyId)!.entity,
+      ),
+    );
+  }
+
+  // -- IfcTypes: template + typeparameters = één type, instanties gekoppeld via RelDefinesByType --
+  for (const [, group] of byType) {
+    const t = group.template;
+    const typeName = label(`${t.name}${group.merk ? ` [${group.merk}]` : ""}`);
+    const typeArgs = [
+      guid(), ownerHistory, typeName, null, null, null, null,
+      group.merk ? ident(group.merk) : null, label(t.name),
+    ] as const;
+    let typeEntity;
+    switch (t.ifcEntity) {
+      case "IfcBeam":
+        typeEntity = new IFC4.IfcBeamType(...typeArgs, IFC4.IfcBeamTypeEnum.BEAM);
+        break;
+      case "IfcPlate":
+        typeEntity = new IFC4.IfcPlateType(...typeArgs, IFC4.IfcPlateTypeEnum.CURTAIN_PANEL);
+        break;
+      default:
+        typeEntity = new IFC4.IfcWallType(...typeArgs, IFC4.IfcWallTypeEnum.USERDEFINED);
+    }
+    api.WriteLine(
+      modelID,
+      new IFC4.IfcRelDefinesByType(guid(), ownerHistory, null, null, group.products, typeEntity),
+    );
+  }
+
+  // -- stramien (IfcGrid) op de onderste bouwlaag --
+  if (opts.grid?.enabled) {
+    const g = opts.grid;
+    const lenX = (g.countX - 1) * g.spacingX;
+    const lenY = (g.countY - 1) * g.spacingY;
+    const margin = 1.2;
+    const axis = (tag: string, a: [number, number], b: [number, number]) =>
+      new IFC4.IfcGridAxis(
+        label(tag),
+        new IFC4.IfcPolyline([pt2(a[0] - origin.x, a[1] - origin.y), pt2(b[0] - origin.x, b[1] - origin.y)]),
+        new IFC4.IfcBoolean(true),
+      );
+    const uAxes = [];
+    for (let i = 0; i < g.countX; i++) {
+      uAxes.push(axis(String(i + 1), [i * g.spacingX, -margin], [i * g.spacingX, lenY + margin]));
+    }
+    const vAxes = [];
+    for (let j = 0; j < g.countY; j++) {
+      vAxes.push(axis(String.fromCharCode(65 + j), [-margin, j * g.spacingY], [lenX + margin, j * g.spacingY]));
+    }
+    const gridEntity = new IFC4.IfcGrid(
+      guid(), ownerHistory, label("Stramien"), null, null,
+      new IFC4.IfcLocalPlacement(firstStorey.placement, new IFC4.IfcAxis2Placement3D(pt3(0, 0, 0), null, null)),
+      null, uAxes, vAxes, null, null,
+    );
+    api.WriteLine(
+      modelID,
+      new IFC4.IfcRelContainedInSpatialStructure(
+        guid(), ownerHistory, label("Stramien"), null, [gridEntity], firstStorey.entity,
       ),
     );
   }

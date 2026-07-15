@@ -3,13 +3,16 @@ import * as OBC from "@thatopen/components";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { getTemplate, templates } from "../catalog/registry";
 import type {
+  GridConfig,
   LineSegment,
   LoadedModelInfo,
   MeasureSegment,
+  Opening,
   ParamValues,
   PlacedElement,
   ProjectOrigin,
   Sheet,
+  Storey,
   TextLabel,
   ViewName,
 } from "./types";
@@ -36,12 +39,15 @@ const SNAP = 0.05; // 50 mm raster-snap bij het tekenen
 export const LAYER_LINES = "Lijnen";
 export const LAYER_MEASURES = "Maatvoering";
 export const LAYER_TEXTS = "Teksten";
+export const LAYER_GRID = "Stramien";
 
 export interface StudioCallbacks {
   onModelsChanged?: (models: LoadedModelInfo[]) => void;
   onElementsChanged?: (elements: PlacedElement[]) => void;
   onSelectionChanged?: (id: string | null) => void;
   onLayersChanged?: (layers: { name: string; visible: boolean }[]) => void;
+  onStoreysChanged?: (storeys: Storey[], activeId: string) => void;
+  onGridChanged?: (grid: GridConfig) => void;
   onStatus?: (msg: string) => void;
 }
 
@@ -67,6 +73,18 @@ export class Studio {
   private selectedId: string | null = null;
   private layerVisibility = new Map<string, boolean>();
   private dxfGroups = new Map<string, THREE.Group>();
+
+  storeys: Storey[] = [{ id: "storey-0", name: "00 begane grond", elevation: 0 }];
+  activeStoreyId = "storey-0";
+  grid: GridConfig = { enabled: false, countX: 5, spacingX: 5, countY: 3, spacingY: 5 };
+  private gridGroup = new THREE.Group();
+
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private lastUndoPush = 0;
+
+  private dragging = false;
+  private dragLast: THREE.Vector3 | null = null;
 
   private authoredGroup = new THREE.Group();
   private lineGroup = new THREE.Group();
@@ -98,6 +116,7 @@ export class Studio {
     this.layerVisibility.set(LAYER_LINES, true);
     this.layerVisibility.set(LAYER_MEASURES, true);
     this.layerVisibility.set(LAYER_TEXTS, true);
+    this.layerVisibility.set(LAYER_GRID, true);
   }
 
   async init(container: HTMLElement) {
@@ -128,10 +147,12 @@ export class Studio {
       this.measureGroup,
       this.textGroup,
       this.dxfRoot,
+      this.gridGroup,
     );
     world.camera.controls.setLookAt(14, 10, 14, 0, 0, 0);
     this.raycaster.params.Line = { threshold: 0.05 };
     this.refreshOriginHelper();
+    this.rebuildGrid();
 
     // Fragments-worker: lokaal gekopieerd bestand; anders ophalen via That Open
     this.fragments = this.components.get(OBC.FragmentsManager);
@@ -244,6 +265,52 @@ export class Studio {
     await this.loadFiles(files);
   }
 
+  /** Heropent een eerder door Open 3D Studio geëxporteerd IFC als bewerkbare elementen. */
+  async reopenIfcAsProject(file: File): Promise<boolean> {
+    this.setStatus(`IFC lezen: ${file.name} …`);
+    try {
+      const { readO3sDataFromIfc } = await import("./ifcReopen");
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const data = await readO3sDataFromIfc(bytes);
+      if (data.length === 0) {
+        this.setStatus(
+          "Geen Open 3D Studio-elementen gevonden in dit IFC — laad het als referentiemodel via IFC/DXF laden.",
+        );
+        return false;
+      }
+      this.pushUndo();
+      const v = (a: number[]) => new THREE.Vector3(a[0], a[1], a[2]);
+      for (const d of data) {
+        try {
+          getTemplate(d.templateId);
+        } catch {
+          continue; // onbekend template overslaan
+        }
+        const n = (this.elementCounters.get(d.templateId) ?? 0) + 1;
+        this.elementCounters.set(d.templateId, n);
+        this.elements.push({
+          id: crypto.randomUUID(),
+          templateId: d.templateId,
+          name: d.name ?? `${getTemplate(d.templateId).name} ${String(n).padStart(2, "0")}`,
+          start: v(d.start),
+          end: v(d.end),
+          params: { ...d.params },
+          storeyId: this.storeys.some((s) => s.id === d.storeyId) ? d.storeyId : this.activeStoreyId,
+          opening: d.opening ?? null,
+        });
+      }
+      this.rebuildAuthored();
+      this.emitElements();
+      this.zoomAll();
+      this.setStatus(`IFC heropend: ${data.length} element(en) zijn weer bewerkbaar.`);
+      return true;
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`Heropenen van ${file.name} is mislukt (zie console).`);
+      return false;
+    }
+  }
+
   setModelVisible(id: string, visible: boolean) {
     const model: any = this.fragments.list.get(id);
     if (model?.object) {
@@ -263,7 +330,12 @@ export class Studio {
     }
     this.setStatus("IFC-export maken …");
     try {
-      const bytes = await exportElementsToIfc(this.elements, { origin: this.origin });
+      this.recomputeMerken();
+      const bytes = await exportElementsToIfc(this.elements, {
+        origin: this.origin,
+        storeys: this.storeys,
+        grid: this.grid,
+      });
       if (
         await this.saveAs(bytes, "open-3d-studio_storax-componenten.ifc", {
           name: "IFC-model",
@@ -368,9 +440,12 @@ export class Studio {
   serializeProject(): Record<string, unknown> {
     const v = (p: THREE.Vector3) => [p.x, p.y, p.z];
     return {
-      version: 1,
+      version: 2,
       app: "open-3d-studio",
       origin: { ...this.origin },
+      storeys: this.storeys.map((s) => ({ ...s })),
+      activeStoreyId: this.activeStoreyId,
+      grid: { ...this.grid },
       elements: this.elements.map((e) => ({
         id: e.id,
         templateId: e.templateId,
@@ -378,6 +453,9 @@ export class Studio {
         start: v(e.start),
         end: v(e.end),
         params: { ...e.params },
+        storeyId: e.storeyId,
+        opening: e.opening ? { ...e.opening } : null,
+        merk: e.merk,
       })),
       lines: this.lines.map((l) => ({ id: l.id, a: v(l.a), b: v(l.b) })),
       measures: this.measures.map((m) => ({ id: m.id, a: v(m.a), b: v(m.b), length: m.length })),
@@ -386,7 +464,7 @@ export class Studio {
   }
 
   /** Herstelt de modelinhoud uit een .o3s-projectbestand. */
-  restoreProject(state: any) {
+  restoreProject(state: any, opts: { silent?: boolean } = {}) {
     const v = (a: number[]) => new THREE.Vector3(a[0], a[1], a[2]);
     this.cancelDrawing();
     this.elements = (state.elements ?? []).map((e: any) => ({
@@ -394,25 +472,38 @@ export class Studio {
       start: v(e.start),
       end: v(e.end),
       params: { ...e.params },
+      opening: e.opening ?? null,
     }));
     this.lines = (state.lines ?? []).map((l: any) => ({ ...l, a: v(l.a), b: v(l.b) }));
     this.measures = (state.measures ?? []).map((m: any) => ({ ...m, a: v(m.a), b: v(m.b) }));
     this.texts = (state.texts ?? []).map((t: any) => ({ ...t, position: v(t.position) }));
     this.origin = state.origin ?? { x: 0, y: 0, z: 0 };
+    this.storeys = state.storeys?.length
+      ? state.storeys.map((s: any) => ({ ...s }))
+      : [{ id: "storey-0", name: "00 begane grond", elevation: 0 }];
+    this.activeStoreyId = this.storeys.some((s: Storey) => s.id === state.activeStoreyId)
+      ? state.activeStoreyId
+      : this.storeys[0].id;
+    if (state.grid) this.grid = { ...state.grid };
     this.elementCounters.clear();
     for (const el of this.elements) {
       this.elementCounters.set(el.templateId, (this.elementCounters.get(el.templateId) ?? 0) + 1);
     }
     this.selectedId = null;
     this.refreshOriginHelper();
+    this.rebuildGrid();
     this.rebuildAuthored();
     this.rebuildLines();
     this.rebuildMeasures();
     this.rebuildTexts();
     this.emitElements();
+    this.emitStoreys();
+    this.callbacks.onGridChanged?.(this.grid);
     this.callbacks.onSelectionChanged?.(null);
-    this.zoomAll();
-    this.setStatus(`Project geladen: ${this.elements.length} element(en).`);
+    if (!opts.silent) {
+      this.zoomAll();
+      this.setStatus(`Project geladen: ${this.elements.length} element(en).`);
+    }
   }
 
   /** Achtergrondkleur van de 3D-omgeving per thema. */
@@ -546,7 +637,199 @@ export class Studio {
     this.world.scene.three.add(this.originHelper);
   }
 
-  // ------------------------------------------------------------------ lagen
+  // ------------------------------------------------------------------ verdiepingen
+  getActiveStorey(): Storey {
+    return this.storeys.find((s) => s.id === this.activeStoreyId) ?? this.storeys[0];
+  }
+
+  setActiveStorey(id: string) {
+    if (!this.storeys.some((s) => s.id === id)) return;
+    this.activeStoreyId = id;
+    this.rebuildGrid();
+    this.emitStoreys();
+    this.setStatus(`Actieve verdieping: ${this.getActiveStorey().name}.`);
+  }
+
+  addStorey() {
+    this.pushUndo();
+    const n = this.storeys.length;
+    const top = this.storeys.reduce((m, s) => Math.max(m, s.elevation), 0);
+    const name =
+      n === 1 ? "01 eerste verdieping" : `${String(n).padStart(2, "0")} verdieping`;
+    const storey: Storey = { id: crypto.randomUUID(), name, elevation: top + 3 };
+    this.storeys.push(storey);
+    this.activeStoreyId = storey.id;
+    this.rebuildGrid();
+    this.emitStoreys();
+  }
+
+  updateStorey(id: string, patch: Partial<Pick<Storey, "name" | "elevation">>) {
+    const storey = this.storeys.find((s) => s.id === id);
+    if (!storey) return;
+    Object.assign(storey, patch);
+    if (id === this.activeStoreyId) this.rebuildGrid();
+    this.emitStoreys();
+  }
+
+  removeStorey(id: string) {
+    if (this.storeys.length <= 1) {
+      this.setStatus("Minimaal één verdieping is vereist.");
+      return;
+    }
+    this.pushUndo();
+    this.storeys = this.storeys.filter((s) => s.id !== id);
+    const fallback = this.storeys[0].id;
+    if (this.activeStoreyId === id) this.activeStoreyId = fallback;
+    for (const el of this.elements) if (el.storeyId === id) el.storeyId = fallback;
+    this.rebuildGrid();
+    this.emitStoreys();
+    this.emitElements();
+  }
+
+  private emitStoreys() {
+    this.callbacks.onStoreysChanged?.([...this.storeys], this.activeStoreyId);
+  }
+
+  // ------------------------------------------------------------------ stramien
+  setGrid(grid: GridConfig) {
+    this.grid = { ...grid };
+    this.rebuildGrid();
+    this.callbacks.onGridChanged?.(this.grid);
+  }
+
+  private rebuildGrid() {
+    for (const child of [...this.gridGroup.children]) {
+      this.gridGroup.remove(child);
+      disposeGroup(child);
+    }
+    if (!this.grid.enabled) return;
+    const y = this.getActiveStorey().elevation + 0.01;
+    const { countX, spacingX, countY, spacingY } = this.grid;
+    const lenX = (countX - 1) * spacingX;
+    const lenY = (countY - 1) * spacingY;
+    const margin = 1.2;
+    const material = new THREE.LineDashedMaterial({
+      color: 0xd97706,
+      dashSize: 0.35,
+      gapSize: 0.15,
+      transparent: true,
+      opacity: 0.8,
+    });
+    const addLine = (a: THREE.Vector3, b: THREE.Vector3, tag: string) => {
+      const geometry = new THREE.BufferGeometry().setFromPoints([a, b]);
+      const line = new THREE.Line(geometry, material);
+      line.computeLineDistances();
+      this.gridGroup.add(line);
+      const label = this.makeLabel(tag);
+      label.scale.set(0.45, 0.1125, 1);
+      label.position.copy(a).add(new THREE.Vector3(0, 0.05, 0));
+      this.gridGroup.add(label);
+    };
+    // assen 1..n: lopen in bouwkundige y-richting (three -z)
+    for (let i = 0; i < countX; i++) {
+      const x = i * spacingX;
+      addLine(
+        new THREE.Vector3(x, y, margin),
+        new THREE.Vector3(x, y, -lenY - margin),
+        String(i + 1),
+      );
+    }
+    // assen A..: lopen in x-richting
+    for (let j = 0; j < countY; j++) {
+      const z = -j * spacingY;
+      addLine(
+        new THREE.Vector3(-margin, y, z),
+        new THREE.Vector3(lenX + margin, y, z),
+        String.fromCharCode(65 + j),
+      );
+    }
+    this.gridGroup.visible = this.layerVisibility.get(LAYER_GRID) !== false;
+  }
+
+  /** Snapt een punt naar het dichtstbijzijnde stramiensnijpunt (binnen 20 cm). */
+  private snapToGrid(point: THREE.Vector3): THREE.Vector3 {
+    if (!this.grid.enabled) return point;
+    const { countX, spacingX, countY, spacingY } = this.grid;
+    const gx = Math.round(point.x / spacingX) * spacingX;
+    const gz = -Math.round(-point.z / spacingY) * spacingY;
+    const inX = gx >= -1e-6 && gx <= (countX - 1) * spacingX + 1e-6;
+    const inY = -gz >= -1e-6 && -gz <= (countY - 1) * spacingY + 1e-6;
+    if (inX && inY && Math.hypot(point.x - gx, point.z - gz) < 0.2) {
+      return new THREE.Vector3(gx, point.y, gz);
+    }
+    return point;
+  }
+
+  // ------------------------------------------------------------------ undo/redo
+  /** Snapshot vóór een wijziging. `throttle` bundelt snelle reeksen (bv. typen in een
+   *  parameterveld) tot één undo-stap; losse handelingen krijgen elk een eigen stap. */
+  private pushUndo(throttle = false) {
+    const now = Date.now();
+    if (throttle && now - this.lastUndoPush < 700 && this.undoStack.length > 0) return;
+    this.lastUndoPush = now;
+    this.undoStack.push(JSON.stringify(this.serializeProject()));
+    if (this.undoStack.length > 50) this.undoStack.shift();
+    this.redoStack = [];
+  }
+
+  undo() {
+    const snapshot = this.undoStack.pop();
+    if (!snapshot) {
+      this.setStatus("Niets om ongedaan te maken.");
+      return;
+    }
+    this.redoStack.push(JSON.stringify(this.serializeProject()));
+    this.restoreProject(JSON.parse(snapshot), { silent: true });
+    this.setStatus("Ongedaan gemaakt.");
+  }
+
+  redo() {
+    const snapshot = this.redoStack.pop();
+    if (!snapshot) {
+      this.setStatus("Niets om opnieuw te doen.");
+      return;
+    }
+    this.undoStack.push(JSON.stringify(this.serializeProject()));
+    this.restoreProject(JSON.parse(snapshot), { silent: true });
+    this.setStatus("Opnieuw gedaan.");
+  }
+
+  // ------------------------------------------------------------------ kopiëren & sparing
+  copyElement(id: string) {
+    const el = this.elements.find((e) => e.id === id);
+    if (!el) return;
+    this.pushUndo();
+    const template = getTemplate(el.templateId);
+    const n = (this.elementCounters.get(template.id) ?? 0) + 1;
+    this.elementCounters.set(template.id, n);
+    // haaks op de wandrichting verplaatsen zodat de kopie zichtbaar naast het origineel ligt
+    const dir = el.end.clone().sub(el.start).normalize();
+    const offset = new THREE.Vector3(dir.z, 0, -dir.x).multiplyScalar(1);
+    const copy: PlacedElement = {
+      ...el,
+      id: crypto.randomUUID(),
+      name: `${template.name} ${String(n).padStart(2, "0")}`,
+      start: el.start.clone().add(offset),
+      end: el.end.clone().add(offset),
+      params: { ...el.params },
+      opening: el.opening ? { ...el.opening } : null,
+    };
+    this.elements.push(copy);
+    this.selectedId = copy.id;
+    this.rebuildAuthored();
+    this.emitElements();
+    this.callbacks.onSelectionChanged?.(copy.id);
+    this.setStatus(`${copy.name} gekopieerd — versleep hem in de selecteermodus.`);
+  }
+
+  setElementOpening(id: string, opening: Opening | null) {
+    const el = this.elements.find((e) => e.id === id);
+    if (!el) return;
+    this.pushUndo();
+    el.opening = opening;
+    this.rebuildAuthored();
+    this.emitElements();
+  }
   getLayers(): { name: string; visible: boolean }[] {
     return [...this.layerVisibility.entries()].map(([name, visible]) => ({ name, visible }));
   }
@@ -556,6 +839,7 @@ export class Studio {
     if (name === LAYER_LINES) this.lineGroup.visible = visible;
     else if (name === LAYER_MEASURES) this.measureGroup.visible = visible;
     else if (name === LAYER_TEXTS) this.textGroup.visible = visible;
+    else if (name === LAYER_GRID) this.gridGroup.visible = visible;
     else if (this.dxfGroups.has(name)) this.dxfGroups.get(name)!.visible = visible;
     else this.rebuildAuthored();
     this.emitLayers();
@@ -627,6 +911,7 @@ export class Studio {
   updateElementParams(id: string, params: ParamValues) {
     const el = this.elements.find((e) => e.id === id);
     if (!el) return;
+    this.pushUndo(true);
     el.params = { ...params };
     this.rebuildAuthored();
     this.emitElements();
@@ -665,6 +950,7 @@ export class Studio {
   }
 
   removeElement(id: string) {
+    this.pushUndo();
     this.elements = this.elements.filter((e) => e.id !== id);
     if (this.selectedId === id) this.selectedId = null;
     this.rebuildAuthored();
@@ -704,11 +990,34 @@ export class Studio {
     const dom: HTMLElement = this.world.renderer.three.domElement;
 
     dom.addEventListener("pointerdown", (e: PointerEvent) => {
-      if (e.button === 0) this.pointerDownPos = { x: e.clientX, y: e.clientY };
+      if (e.button !== 0) return;
+      this.pointerDownPos = { x: e.clientX, y: e.clientY };
+      // verslepen: in selecteermodus met de muis op het geselecteerde element
+      if (this.tool === "select" && this.selectedId) {
+        const hit = this.raycastGroups(e, [this.authoredGroup]);
+        let obj: THREE.Object3D | null = hit?.object ?? null;
+        while (obj && !obj.userData.elementId) obj = obj.parent;
+        if (obj?.userData.elementId === this.selectedId) {
+          this.pushUndo();
+          this.dragging = true;
+          this.dragLast = this.pickPoint(e);
+          this.world.camera.controls.enabled = false;
+        }
+      }
     });
 
     dom.addEventListener("pointerup", (e: PointerEvent) => {
-      if (e.button !== 0 || !this.pointerDownPos) return;
+      if (e.button !== 0) return;
+      if (this.dragging) {
+        this.dragging = false;
+        this.dragLast = null;
+        this.world.camera.controls.enabled = true;
+        this.pointerDownPos = null;
+        this.emitElements();
+        this.setStatus("Element verplaatst.");
+        return;
+      }
+      if (!this.pointerDownPos) return;
       const moved = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
       this.pointerDownPos = null;
       if (moved > 5) return; // slepen = camera, geen klik
@@ -716,6 +1025,21 @@ export class Studio {
     });
 
     dom.addEventListener("pointermove", (e: PointerEvent) => {
+      if (this.dragging && this.selectedId) {
+        const el = this.elements.find((el) => el.id === this.selectedId);
+        const p = this.pickPoint(e);
+        if (el && p && this.dragLast) {
+          const delta = p.clone().sub(this.dragLast);
+          delta.y = 0; // verslepen blijft op hetzelfde peil
+          if (delta.lengthSq() > 0) {
+            el.start.add(delta);
+            el.end.add(delta);
+            this.dragLast = p;
+            this.rebuildAuthored();
+          }
+        }
+        return;
+      }
       if (this.tool === "draw" && this.drawStart) {
         const p = this.pickPoint(e);
         if (p) this.refreshPreviewTo(p);
@@ -746,6 +1070,17 @@ export class Studio {
       if (e.key === "Escape" && this.isDrawingBusy()) {
         this.cancelDrawing();
         this.setStatus("Tekenen gestopt.");
+        return;
+      }
+      const inInput = (e.target as HTMLElement)?.tagName === "INPUT";
+      if (!inInput && (e.ctrlKey || e.metaKey)) {
+        if (e.key.toLowerCase() === "z" && !e.shiftKey) {
+          e.preventDefault();
+          this.undo();
+        } else if (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey)) {
+          e.preventDefault();
+          this.redo();
+        }
       }
     });
   }
@@ -927,7 +1262,8 @@ export class Studio {
     this.selectElement(obj?.userData.elementId ?? null);
   }
 
-  /** Tekenvlak afhankelijk van het actieve aanzicht, door het nulpunt. */
+  /** Tekenvlak afhankelijk van het actieve aanzicht: horizontaal op het peil van de
+   *  actieve verdieping, verticaal door het nulpunt. */
   private drawPlane(): THREE.Plane {
     const o = new THREE.Vector3(this.origin.x, this.origin.z, -this.origin.y);
     switch (this.currentView) {
@@ -941,10 +1277,8 @@ export class Studio {
         const n = new THREE.Vector3(1, 0, 0);
         return new THREE.Plane(n, -n.dot(o));
       }
-      default: {
-        const n = new THREE.Vector3(0, 1, 0);
-        return new THREE.Plane(n, -n.dot(o));
-      }
+      default:
+        return new THREE.Plane(new THREE.Vector3(0, 1, 0), -this.getActiveStorey().elevation);
     }
   }
 
@@ -968,7 +1302,7 @@ export class Studio {
     point.x = Math.round(point.x / SNAP) * SNAP;
     point.z = Math.round(point.z / SNAP) * SNAP;
     point.y = Math.round(point.y / SNAP) * SNAP;
-    return point;
+    return this.snapToGrid(point);
   }
 
   private currentRay(e: PointerEvent): THREE.Ray {
@@ -1014,13 +1348,14 @@ export class Studio {
     params: ParamValues,
     opts: { preview?: boolean; selected?: boolean } = {},
     templateId = this.activeTemplateId,
+    opening: Opening | null = null,
   ): THREE.Group | null {
     const template = getTemplate(templateId);
     const dx = end.x - start.x;
     const dz = end.z - start.z;
     const length = Math.hypot(dx, dz);
     if (length < 0.05) return null;
-    const group = buildElementGroup(template, length, params, opts);
+    const group = buildElementGroup(template, length, params, opts, opening);
     const basis = typeof params.basisHoogte === "number" ? params.basisHoogte : 0;
     group.position.set(start.x, start.y + basis * MM, start.z);
     group.rotation.y = Math.atan2(-dz, dx);
@@ -1033,6 +1368,7 @@ export class Studio {
       this.setStatus("Element te kort — klik een eindpunt verder van het startpunt.");
       return;
     }
+    this.pushUndo();
     const template = getTemplate(this.activeTemplateId);
     const n = (this.elementCounters.get(template.id) ?? 0) + 1;
     this.elementCounters.set(template.id, n);
@@ -1043,6 +1379,8 @@ export class Studio {
       start: start.clone(),
       end: end.clone(),
       params: { ...this.currentParams },
+      storeyId: this.activeStoreyId,
+      opening: null,
     };
     this.elements.push(el);
     this.drawStart = null;
@@ -1084,6 +1422,7 @@ export class Studio {
         el.params,
         { selected: el.id === this.selectedId },
         el.templateId,
+        el.opening ?? null,
       );
       if (group) {
         group.userData.elementId = el.id;
@@ -1177,7 +1516,31 @@ export class Studio {
     this.callbacks.onModelsChanged?.([...this.models]);
   }
 
+  /** Merk-/posnummering (Tekla-principe): identieke elementen delen één merk.
+   *  W = wanden, P = panelen/roosters, B = balken/dragers. */
+  private recomputeMerken() {
+    const groups = new Map<string, string>();
+    const counters = new Map<string, number>();
+    for (const el of this.elements) {
+      const template = getTemplate(el.templateId);
+      const prefix =
+        template.ifcEntity === "IfcBeam" ? "B" : template.ifcEntity === "IfcPlate" ? "P" : "W";
+      const len = Math.round(Math.hypot(el.end.x - el.start.x, el.end.z - el.start.z) * 1000);
+      const { basisHoogte: _basis, ...typeParams } = el.params as Record<string, unknown>;
+      const key = [el.templateId, len, JSON.stringify(typeParams), JSON.stringify(el.opening ?? null)].join("|");
+      let merk = groups.get(key);
+      if (!merk) {
+        const n = (counters.get(prefix) ?? 0) + 1;
+        counters.set(prefix, n);
+        merk = `${prefix}${String(n).padStart(2, "0")}`;
+        groups.set(key, merk);
+      }
+      el.merk = merk;
+    }
+  }
+
   private emitElements() {
+    this.recomputeMerken();
     this.callbacks.onElementsChanged?.([...this.elements]);
   }
 

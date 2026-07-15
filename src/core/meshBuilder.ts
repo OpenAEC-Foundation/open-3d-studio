@@ -1,5 +1,42 @@
 import * as THREE from "three";
-import type { ComponentTemplate, ParamValues } from "./types";
+import type { ComponentTemplate, Opening, ParamValues, SolidBox } from "./types";
+
+/** Past een sparing toe op de opbouw: doorsnijdt alle volumes binnen het sparingsgebied.
+ *  Wordt door de 3D-weergave én de IFC-export gebruikt, zodat beide identiek blijven. */
+export function applyOpening(solids: SolidBox[], opening: Opening): SolidBox[] {
+  const x0 = opening.xPos - opening.breedte / 2;
+  const x1 = opening.xPos + opening.breedte / 2;
+  const out: SolidBox[] = [];
+  for (const original of solids) {
+    let s = original;
+    const sx0 = s.cx - s.dx / 2;
+    const sx1 = s.cx + s.dx / 2;
+    if (sx1 <= x0 || sx0 >= x1 || s.zBottom >= opening.hoogte) {
+      out.push(s);
+      continue;
+    }
+    const zTop = s.zBottom + s.dz;
+    if (zTop > opening.hoogte) {
+      // bovenste deel steekt boven de sparing uit en blijft staan
+      out.push({ ...s, zBottom: opening.hoogte, dz: zTop - opening.hoogte });
+      s = { ...s, dz: opening.hoogte - s.zBottom };
+    }
+    if (sx0 < x0) out.push({ ...s, cx: (sx0 + x0) / 2, dx: x0 - sx0 });
+    if (sx1 > x1) out.push({ ...s, cx: (x1 + sx1) / 2, dx: sx1 - x1 });
+  }
+  return out.filter((s) => s.dx > 0.001 && s.dz > 0.001);
+}
+
+/** Opbouw van een element inclusief eventuele sparing. */
+export function elementSolids(
+  template: ComponentTemplate,
+  length: number,
+  params: ParamValues,
+  opening?: Opening | null,
+): SolidBox[] {
+  const solids = template.solids(length, params);
+  return opening ? applyOpening(solids, opening) : solids;
+}
 
 /** Bouwt de three.js-weergave van een component uit dezelfde solids-definitie
  *  die ook voor de IFC-export wordt gebruikt.
@@ -12,9 +49,10 @@ export function buildElementGroup(
   length: number,
   params: ParamValues,
   opts: { preview?: boolean; selected?: boolean } = {},
+  opening?: Opening | null,
 ): THREE.Group {
   const group = new THREE.Group();
-  const solids = template.solids(length, params);
+  const solids = elementSolids(template, length, params, opening);
 
   const material = new THREE.MeshStandardMaterial({
     color: new THREE.Color(template.color(params)),

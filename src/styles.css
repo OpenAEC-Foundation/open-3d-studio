@@ -593,6 +593,64 @@ button.mini.accent {
   border-color: var(--amber);
 }
 
+.storey-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.storey-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.storey-row input[type="number"] {
+  width: 64px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.grid-config {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.grid-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.grid-config label span {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.grid-config input {
+  width: 100%;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 /* ---------- statusbalk ---------- */
 .statusbar {
   height: 28px;

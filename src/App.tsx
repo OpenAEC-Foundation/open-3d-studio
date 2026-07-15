@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Studio, type ToolName, type ViewName } from "./core/studio";
 import { getTemplate, templates } from "./catalog/registry";
-import type { LoadedModelInfo, ParamValues, PlacedElement, Sheet } from "./core/types";
+import type { GridConfig, LoadedModelInfo, ParamValues, PlacedElement, Sheet, Storey } from "./core/types";
 import { openFilesDialog, saveFileAs } from "./core/fileio";
 import { ParamsPanel } from "./ui/ParamsPanel";
 import { Ribbon, type RibbonTab } from "./ui/Ribbon";
@@ -64,6 +64,15 @@ export default function App() {
   const [textValue, setTextValue] = useState("Tekst");
   const [sheets, setSheets] = useState<Sheet[]>([]);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
+  const [storeys, setStoreys] = useState<Storey[]>([]);
+  const [activeStoreyId, setActiveStoreyId] = useState("");
+  const [gridCfg, setGridCfg] = useState<GridConfig>({
+    enabled: false,
+    countX: 5,
+    spacingX: 5,
+    countY: 3,
+    spacingY: 5,
+  });
   const [status, setStatus] = useState("Studio wordt gestart …");
 
   const t = useMemo(() => makeT(lang), [lang]);
@@ -87,11 +96,19 @@ export default function App() {
           }
         }
       },
+      onStoreysChanged: (s, activeId) => {
+        setStoreys(s);
+        setActiveStoreyId(activeId);
+      },
+      onGridChanged: setGridCfg,
       onStatus: setStatus,
     };
     studio.init(containerRef.current).then(
       () => {
         setLayers(studio.getLayers());
+        setStoreys([...studio.storeys]);
+        setActiveStoreyId(studio.activeStoreyId);
+        setGridCfg({ ...studio.grid });
         studio.setTheme((localStorage.getItem("o3s-theme") as "dark" | "light") || "dark");
       },
       (err) => {
@@ -237,7 +254,18 @@ export default function App() {
         },
         {
           title: t("grpImport"),
-          items: [{ id: "load", icon: "⬆", label: t("btnLoadModel"), onClick: loadModels }],
+          items: [
+            { id: "load", icon: "⬆", label: t("btnLoadModel"), onClick: loadModels },
+            {
+              id: "reopen",
+              icon: "⟳",
+              label: t("btnReopen"),
+              onClick: async () => {
+                const files = await openFilesDialog([{ name: "IFC", extensions: ["ifc"] }], false);
+                if (files.length) await studio()?.reopenIfcAsProject(files[0]);
+              },
+            },
+          ],
         },
         {
           title: t("grpExport"),
@@ -259,6 +287,16 @@ export default function App() {
           items: [
             { id: "select", icon: "⌖", label: t("btnSelect"), active: tool === "select", onClick: () => activateTool("select") },
             { id: "draw", icon: "▤", label: t("btnDrawComponent"), active: tool === "draw", title: template.name, onClick: () => activateTool("draw") },
+          ],
+        },
+        {
+          title: t("grpEdit"),
+          items: [
+            ...(selected
+              ? [{ id: "copy", icon: "⧉", label: t("btnCopy"), onClick: () => studio()?.copyElement(selected.id) }]
+              : []),
+            { id: "undo", icon: "↶", label: t("btnUndo"), title: "Ctrl+Z", onClick: () => studio()?.undo() },
+            { id: "redo", icon: "↷", label: t("btnRedo"), title: "Ctrl+Y", onClick: () => studio()?.redo() },
           ],
         },
         {
@@ -416,9 +454,134 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+                <label className="param-row">
+                  <span>{t("openingEnabled")}</span>
+                  <input
+                    type="checkbox"
+                    checked={!!selected.opening}
+                    onChange={(e) =>
+                      studio()?.setElementOpening(
+                        selected.id,
+                        e.target.checked
+                          ? { xPos: (selectedLengthMm / 2000) || 1, breedte: 0.9, hoogte: 2.1 }
+                          : null,
+                      )
+                    }
+                  />
+                </label>
+                {selected.opening && (
+                  <>
+                    {(
+                      [
+                        ["openingPos", "xPos"],
+                        ["openingWidth", "breedte"],
+                        ["openingHeight", "hoogte"],
+                      ] as const
+                    ).map(([labelKey, field]) => (
+                      <label key={field} className="param-row">
+                        <span>{t(labelKey)}</span>
+                        <span className="param-input">
+                          <input
+                            type="number"
+                            step={10}
+                            value={Math.round((selected.opening?.[field] ?? 0) * 1000)}
+                            onChange={(e) =>
+                              studio()?.setElementOpening(selected.id, {
+                                ...selected.opening!,
+                                [field]: Number(e.target.value) / 1000,
+                              })
+                            }
+                          />
+                          <em>mm</em>
+                        </span>
+                      </label>
+                    ))}
+                  </>
+                )}
                 <button className="danger" onClick={() => studio()?.removeElement(selected.id)}>
                   {t("deleteElement")}
                 </button>
+              </div>
+            )}
+          </section>
+
+          <section>
+            <h2>{t("panStoreys")}</h2>
+            <ul className="list">
+              {storeys.map((s) => (
+                <li key={s.id} className="storey-row">
+                  <input
+                    type="radio"
+                    name="active-storey"
+                    title="Actieve verdieping"
+                    checked={s.id === activeStoreyId}
+                    onChange={() => studio()?.setActiveStorey(s.id)}
+                  />
+                  <input
+                    type="text"
+                    value={s.name}
+                    onChange={(e) => studio()?.updateStorey(s.id, { name: e.target.value })}
+                  />
+                  <input
+                    type="number"
+                    step={100}
+                    title={`${t("level")} (mm)`}
+                    value={Math.round(s.elevation * 1000)}
+                    onChange={(e) =>
+                      studio()?.updateStorey(s.id, { elevation: Number(e.target.value) / 1000 })
+                    }
+                  />
+                  <button className="mini" onClick={() => studio()?.removeStorey(s.id)}>✕</button>
+                </li>
+              ))}
+            </ul>
+            <div className="btn-row">
+              <button className="mini" onClick={() => studio()?.addStorey()}>{t("addStorey")}</button>
+            </div>
+          </section>
+
+          <section>
+            <h2>{t("panGrid")}</h2>
+            <label className="param-row">
+              <span>{t("gridEnabled")}</span>
+              <input
+                type="checkbox"
+                checked={gridCfg.enabled}
+                onChange={(e) => {
+                  const next = { ...gridCfg, enabled: e.target.checked };
+                  setGridCfg(next);
+                  studio()?.setGrid(next);
+                }}
+              />
+            </label>
+            {gridCfg.enabled && (
+              <div className="grid-config">
+                {(
+                  [
+                    ["gridCountX", "countX", 1],
+                    ["gridSpacing", "spacingX", 1000],
+                    ["gridCountY", "countY", 1],
+                    ["gridSpacing", "spacingY", 1000],
+                  ] as const
+                ).map(([labelKey, field, factor], i) => (
+                  <label key={field}>
+                    <span>
+                      {i < 2 ? t("gridCountX") : t("gridCountY")}
+                      {field.startsWith("spacing") ? ` ${t("gridSpacing")}` : ""}
+                    </span>
+                    <input
+                      type="number"
+                      min={field.startsWith("count") ? 2 : 100}
+                      step={field.startsWith("count") ? 1 : 100}
+                      value={Math.round(gridCfg[field] * factor)}
+                      onChange={(e) => {
+                        const next = { ...gridCfg, [field]: Number(e.target.value) / factor };
+                        setGridCfg(next);
+                        studio()?.setGrid(next);
+                      }}
+                    />
+                  </label>
+                ))}
               </div>
             )}
           </section>
@@ -515,7 +678,7 @@ export default function App() {
                     className={el.id === selectedId ? "list-btn active" : "list-btn"}
                     onClick={() => studio()?.selectElement(el.id)}
                   >
-                    {el.name}
+                    {el.merk ? `${el.merk} · ` : ""}{el.name}
                   </button>
                 </li>
               ))}

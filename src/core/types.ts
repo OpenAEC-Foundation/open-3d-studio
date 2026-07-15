@@ -58,6 +58,15 @@ export interface ComponentTemplate {
   psetProps(length: number, p: ParamValues): Record<string, number | string>;
 }
 
+/** Sparing (opening) in een wandvormig element, in wand-lokale coördinaten (meters). */
+export interface Opening {
+  /** afstand van het startpunt tot het midden van de sparing, langs de wandas */
+  xPos: number;
+  breedte: number;
+  /** hoogte van de sparing vanaf de onderkant van het element */
+  hoogte: number;
+}
+
 /** Een geplaatst element in het model (start/eind in three.js-wereldcoördinaten, meters, y = omhoog). */
 export interface PlacedElement {
   id: string;
@@ -66,6 +75,31 @@ export interface PlacedElement {
   start: THREE.Vector3;
   end: THREE.Vector3;
   params: ParamValues;
+  /** verdieping waarop het element hoort (IfcBuildingStorey) */
+  storeyId?: string;
+  /** optionele sparing */
+  opening?: Opening | null;
+  /** merk-/posnummer (automatisch, identieke elementen delen een merk) */
+  merk?: string;
+}
+
+/** Bouwlaag conform BIM basis ILS-naamgeving ("00 begane grond", "01 eerste verdieping"). */
+export interface Storey {
+  id: string;
+  name: string;
+  /** peil in meters */
+  elevation: number;
+}
+
+/** Rechthoekig stramien: assen 1..n in x-richting, A..n in y-richting (bouwkundig). */
+export interface GridConfig {
+  enabled: boolean;
+  /** aantal assen in x-richting (genummerd 1, 2, 3, …) */
+  countX: number;
+  /** hart-op-hart in meters */
+  spacingX: number;
+  countY: number;
+  spacingY: number;
 }
 
 export interface LoadedModelInfo {
