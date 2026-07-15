@@ -54,6 +54,16 @@ npm run dev      # http://localhost:5173
 De benodigde wasm- en workerbestanden worden bij `npm install` automatisch uit
 `node_modules` naar `public/` gekopieerd; de app draait daarna volledig lokaal.
 
+### Desktop-app (Tauri v2)
+
+```bash
+npm run tauri dev     # desktop-app in ontwikkelmodus
+npm run tauri build   # Windows-installer (NSIS) in src-tauri/target/release/bundle/nsis/
+```
+
+Vereist Rust (MSVC-toolchain) en de Microsoft C++ Build Tools. Kant-en-klare
+installers staan bij de releases op GitHub.
+
 ## Architectuur
 
 ```

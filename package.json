@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "tauri": "tauri",
     "postinstall": "node scripts/copy-assets.mjs"
   },
   "dependencies": {
