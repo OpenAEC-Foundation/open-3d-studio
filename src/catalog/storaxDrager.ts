@@ -1,4 +1,4 @@
-﻿import type { ComponentTemplate, ParamValues, SolidBox } from "../core/types";
+import type { ComponentTemplate, ParamValues, SolidBox } from "../core/types";
 
 /** Storax drager (kokerprofiel).
  *
