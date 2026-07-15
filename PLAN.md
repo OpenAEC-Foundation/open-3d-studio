@@ -1,6 +1,11 @@
 # Studie & plan — de grote sprong van Open 3D Studio
 
-*Versie 1.0 — juli 2026. Levend document: prioriteiten schuiven op basis van testervaringen.*
+*Versie 1.1 — juli 2026. Levend document: prioriteiten schuiven op basis van testervaringen.*
+
+> **Stand v0.3.0**: alle vier de fasen zijn in eerste werkende versie uitgevoerd, met vier
+> bewuste uitzonderingen: native DWG (Rust/WASM-project), code signing (certificaat vereist),
+> auto-update (sleutelbeheer) en volledige meertaligheid van statusmeldingen. Zie
+> [RELEASE_NOTES.md](RELEASE_NOTES.md) voor wat er per fase is opgeleverd.
 
 Dit document analyseert wat Open 3D Studio kan leren van vier gevestigde modelleerpakketten
 (Revit, Tekla Structures, HSBcad, Blender/Bonsai), toetst de huidige stand aan de
