@@ -100,6 +100,9 @@ const nl = {
   openingWidth: "Breedte",
   openingHeight: "Hoogte",
   colMerk: "Merk",
+  btnExportDxf: "DXF (2D)",
+  btnProductie: "Productie (PDF)",
+  maxPanel: "Max. paneelbreedte",
 };
 
 const en: typeof nl = {
@@ -197,6 +200,9 @@ const en: typeof nl = {
   openingWidth: "Width",
   openingHeight: "Height",
   colMerk: "Mark",
+  btnExportDxf: "DXF (2D)",
+  btnProductie: "Production (PDF)",
+  maxPanel: "Max. panel width",
 };
 
 export const STRINGS: Record<Lang, typeof nl> = { nl, en };

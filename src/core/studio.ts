@@ -424,6 +424,61 @@ export class Studio {
     }
   }
 
+  /** 2D-DXF-export van het bovenaanzicht (footprints, lijnen, maten, teksten). */
+  async exportDxf() {
+    if (this.elements.length === 0 && this.lines.length === 0 && this.measures.length === 0) {
+      this.setStatus("Niets om naar DXF te exporteren.");
+      return;
+    }
+    try {
+      this.recomputeMerken();
+      const { exportTopViewDxf } = await import("./dxfExport");
+      const dxf = exportTopViewDxf({
+        elements: this.elements,
+        lines: this.lines,
+        measures: this.measures,
+        texts: this.texts,
+      });
+      if (
+        await this.saveAs(dxf, "open-3d-studio_bovenaanzicht.dxf", {
+          name: "DXF (2D)",
+          extensions: ["dxf"],
+        })
+      ) {
+        this.setStatus("DXF geëxporteerd (bovenaanzicht, mm).");
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus("DXF-export mislukt (zie console).");
+    }
+  }
+
+  /** Elementeer- en productierapport (HSBcad-principe). */
+  async exportElementeerRapport(maxPaneelbreedteMm: number) {
+    if (this.elements.length === 0) {
+      this.setStatus("Nog geen elementen om te elementeren.");
+      return;
+    }
+    try {
+      this.recomputeMerken();
+      const { maakElementeerRapport } = await import("./elementeren");
+      const blob = await maakElementeerRapport(this.elements, maxPaneelbreedteMm);
+      if (
+        await this.saveAs(blob, "open-3d-studio_productierapport.pdf", {
+          name: "PDF",
+          extensions: ["pdf"],
+        })
+      ) {
+        this.setStatus(
+          `Productierapport geëxporteerd (${this.elements.length} element(en), max. paneel ${maxPaneelbreedteMm} mm).`,
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus("Productierapport mislukt (zie console).");
+    }
+  }
+
   private async saveAs(
     data: Uint8Array | Blob | string,
     filename: string,
@@ -527,6 +582,7 @@ export class Studio {
           contentBox: this.computeContentBox(),
           hide,
           darkenLines: [this.lineGroup, this.measureGroup, this.dxfRoot],
+          measures: this.measures,
           projectName: "Open 3D Studio — Storax componenten",
         },
         sheet,

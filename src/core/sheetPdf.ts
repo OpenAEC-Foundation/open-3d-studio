@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { Sheet, SheetViewport, ViewName } from "./types";
+import type { MeasureSegment, Sheet, SheetViewport, ViewName } from "./types";
 
 /** Sheets: tekeningbladen met afdrukvensters op ware schaal en een titelblok.
  *
@@ -15,7 +15,27 @@ export interface SheetRenderContext {
   hide: THREE.Object3D[];
   /** groepen waarvan lijnkleuren tijdelijk donker worden op wit papier */
   darkenLines: THREE.Object3D[];
+  /** maatvoering uit het model, als vector op de bladen getekend */
+  measures: MeasureSegment[];
   projectName: string;
+}
+
+/** Schermassen (rechts/omhoog) van een aanzicht, voor projectie wereld -> papier. */
+function viewBasis(view: ViewName): { right: THREE.Vector3; up: THREE.Vector3 } {
+  switch (view) {
+    case "top":
+      return { right: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 0, -1) };
+    case "front":
+      return { right: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 1, 0) };
+    case "back":
+      return { right: new THREE.Vector3(-1, 0, 0), up: new THREE.Vector3(0, 1, 0) };
+    case "right":
+      return { right: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, 1, 0) };
+    case "left":
+      return { right: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0) };
+    default:
+      return { right: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 1, 0) };
+  }
 }
 
 const PAPER_MM: Record<Sheet["format"], [number, number]> = {
@@ -165,6 +185,70 @@ export async function renderSheetPdf(ctx: SheetRenderContext, sheet: Sheet): Pro
       doc.setFillColor(255, 255, 255);
       doc.rect(x + 1.5, y + cellH - 7, Math.max(40, label.length * 1.8), 5.5, "F");
       doc.text(label, x + 3, y + cellH - 3);
+
+      if (vp.view !== "iso") {
+        // projectie wereld -> papier (mm) voor vector-annotaties
+        const { right, up } = viewBasis(vp.view);
+        const toPaper = (p: THREE.Vector3): [number, number] => {
+          const rel = p.clone().sub(center);
+          return [
+            x + cellW / 2 + (rel.dot(right) * 1000) / vp.scale,
+            y + cellH / 2 - (rel.dot(up) * 1000) / vp.scale,
+          ];
+        };
+        const binnen = ([px, py]: [number, number]) =>
+          px > x + 1 && px < x + cellW - 1 && py > y + 1 && py < y + cellH - 1;
+
+        // maatvoering als vector
+        doc.setDrawColor(180, 90, 10);
+        doc.setTextColor(150, 75, 5);
+        doc.setLineWidth(0.25);
+        doc.setFontSize(7);
+        for (const m of ctx.measures) {
+          const a = toPaper(m.a);
+          const b = toPaper(m.b);
+          if (!binnen(a) || !binnen(b)) continue;
+          doc.line(a[0], a[1], b[0], b[1]);
+          const tick = 0.8;
+          doc.line(a[0] - tick, a[1] + tick, a[0] + tick, a[1] - tick);
+          doc.line(b[0] - tick, b[1] + tick, b[0] + tick, b[1] - tick);
+          doc.text(`${Math.round(m.length * 1000)}`, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 1, {
+            align: "center",
+          });
+        }
+
+        // schaalbalk linksonder (1 m-blokken, totaal ~5 m of passend)
+        const blokken = 5;
+        const blokPapier = 1000 / vp.scale;
+        if (blokPapier * blokken < cellW * 0.5) {
+          const sx = x + 4;
+          const sy = y + cellH - 11;
+          doc.setLineWidth(0.2);
+          doc.setDrawColor(30);
+          for (let bIdx = 0; bIdx < blokken; bIdx++) {
+            if (bIdx % 2 === 0) doc.setFillColor(30, 30, 30);
+            else doc.setFillColor(255, 255, 255);
+            doc.rect(sx + bIdx * blokPapier, sy, blokPapier, 1.4, "FD");
+          }
+          doc.setFontSize(6);
+          doc.setTextColor(30);
+          doc.text("0", sx, sy - 0.8);
+          doc.text(`${blokken} m`, sx + blokken * blokPapier, sy - 0.8, { align: "right" });
+        }
+
+        // noordpijl (alleen bovenaanzicht; boven = noorden)
+        if (vp.view === "top") {
+          const nx = x + cellW - 8;
+          const ny = y + 10;
+          doc.setDrawColor(30);
+          doc.setFillColor(30, 30, 30);
+          doc.setLineWidth(0.3);
+          doc.triangle(nx, ny - 4.5, nx - 2, ny + 2.5, nx + 2, ny + 2.5, "FD");
+          doc.setFontSize(8);
+          doc.setTextColor(30);
+          doc.text("N", nx, ny + 6.5, { align: "center" });
+        }
+      }
     });
 
     // titelblok

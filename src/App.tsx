@@ -73,6 +73,7 @@ export default function App() {
     countY: 3,
     spacingY: 5,
   });
+  const [maxPaneel, setMaxPaneel] = useState(3000);
   const [status, setStatus] = useState("Studio wordt gestart …");
 
   const t = useMemo(() => makeT(lang), [lang]);
@@ -273,6 +274,8 @@ export default function App() {
             { id: "ifc", icon: "⬇", label: t("btnExportIfc"), accent: true, onClick: () => studio()?.exportIfc() },
             { id: "stl", icon: "▲", label: t("btnExportStl"), onClick: () => studio()?.exportStl() },
             { id: "pdf", icon: "⎙", label: t("btnExportPdf"), onClick: () => studio()?.exportPdf(viewLabels[view]) },
+            { id: "dxf", icon: "▱", label: t("btnExportDxf"), onClick: () => studio()?.exportDxf() },
+            { id: "prod", icon: "⚙", label: t("btnProductie"), onClick: () => studio()?.exportElementeerRapport(maxPaneel) },
             { id: "csv", icon: "▦", label: t("btnExportCsv"), onClick: exportCsv },
           ],
         },
@@ -831,8 +834,24 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
+                <label className="param-row">
+                  <span>{t("maxPanel")}</span>
+                  <span className="param-input">
+                    <input
+                      type="number"
+                      step={100}
+                      min={300}
+                      value={maxPaneel}
+                      onChange={(e) => setMaxPaneel(Number(e.target.value))}
+                    />
+                    <em>mm</em>
+                  </span>
+                </label>
                 <div className="btn-row">
                   <button className="mini" onClick={exportCsv}>{t("exportCsv")}</button>
+                  <button className="mini" onClick={() => studio()?.exportElementeerRapport(maxPaneel)}>
+                    {t("btnProductie")}
+                  </button>
                 </div>
               </>
             )}
