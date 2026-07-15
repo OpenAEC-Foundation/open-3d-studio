@@ -44,6 +44,31 @@ Dit document analyseert wat Open 3D Studio kan leren van vier gevestigde modelle
 | **Het IFC-bestand ÍS het model** | Geen export/import-conversie; openen, bewerken, opslaan van IFC zonder verlies | De stip op de horizon: van "exporteren naar IFC" naar **IFC round-trip** — eigen export heropenen en doorbewerken, daarna ook IFC's van derden kunnen aanpassen |
 | **Open source als ecosysteem** | Community-templates, add-ons | Aansluiten op de OpenAEC-suite (BCF Manager, BIM Validator, 2D Studio) in plaats van alles zelf bouwen |
 
+### 1.5 De huidige generatie — stand 2025/2026 (onderzocht juli 2026)
+
+Wat de actuele releases laten zien, en wat dat voor ons betekent:
+
+| Pakket | Actuele stand | Relevantie voor Open 3D Studio |
+|---|---|---|
+| **Revit 2026** | GPU-versnelde viewport (tech preview), reality-capture-meshes, wanden per ruimte plaatsen, parametrische wapening, fijnmazige zichtbaarheid/kleuring van gekoppelde coördinatiemodellen | Evolutie, geen revolutie — het familie/type-model is onveranderd. Onze federatie-weergave kan leren van hun kleur-/isolatiebediening per gekoppeld model |
+| **Tekla Structures 2026** | AI-gestuurde tekeningsjabloon-selectie, cloud-console voor projectinstellingen, vernieuwde tekening-ribbon, model + tekening tegelijk open, Live Collaboration, **Tekla Model Assistant** (agentische AI: modelleren via natuurlijke taal, preview) | Bevestigt onze ribbon- en sheets-richting; agentische AI op een parametrisch model is exact waar onze template-architectuur zich voor leent |
+| **hsbcad (2026)** | Jaarlijkse releases (sept.) van hsbDesign for Revit/AutoCAD + hsbMake; hsbShare-cloud; CNC-export per onderdeel, eigen werkplaatstekeningen | Het specialisten-op-platform-model: houtbouwkennis als laag bóven een host. Onze fabrikant-templates (Storax) volgen hetzelfde patroon — met IFC in plaats van Revit als host |
+| **Blender/Bonsai 0.8.5** (0.8.6-alpha, juli 2026) | Gestaag door-ontwikkelende open source IFC-native authoring op IfcOpenShell | Blijft het bewijs én de referentie-implementatie voor onze Fase 3 (IFC als werkbestand) |
+
+**De nieuwe generatie ("BIM 2.0", browser-native):**
+
+| Speler | Kern | Les voor ons |
+|---|---|---|
+| **Qonic** | Cloud/browser, **volledig IFC-native** bewerken; april 2026: geannoteerde plattegronden/doorsnedes rechtstreeks uit IFC; geo-referentie aan nationale stelsels; AI-classificatie van IFC-elementen (buildingSMART-award) | De sterkste validatie van onze koers: IFC-native + browser + tekeningen-uit-model is commercieel levensvatbaar. Geo-referentie (RD-stelsel!) hoort in ons nulpunt-verhaal; AI-classificatie sluit aan op onze ILS-validatie |
+| **Snaptrude** | Browser-BIM voor ontwerp; AI genereert BIM-model uit ruimteprogramma; Revit-integratie | Programma-gedreven genereren = onze template-gedachte op gebouwniveau |
+| **Arcol / Motif** | Conceptfase in de browser; Motif bouwt "agent-native" vanaf nul (ex-Autodesk-CTO) | De hele nieuwe generatie is web-first en AI-first — onze stack (web + Tauri) zit aan de goede kant van die streep |
+
+**Conclusies voor het plan** (verwerkt in de fasen hieronder):
+1. Onze architectuurkeuze (browser-engine + IFC-native + desktop-schil) is dezelfde als die van de best gefinancierde nieuwkomers — doorzetten.
+2. **Geo-referentie** (RD-coördinaten/`IfcMapConversion`) toevoegen aan het nulpunt-werk.
+3. Een **AI-modelleerassistent** (natuurlijke taal → template-plaatsingen) is voor ons laaghangend fruit: onze componenten zijn al parametrische commando's — toegevoegd aan Fase 4.
+4. Tekeningen rechtstreeks uit het model (Qonic) bevestigt de sheets-lijn van Fase 2.
+
 ---
 
 ## 2. BIM basis ILS 2.0 als meetlat
@@ -97,10 +122,12 @@ Status per eis en wat het plan eraan doet:
 3. **BCF**: issues aanmaken/lezen (koppeling OpenAEC BCF-platform)
 4. **Native DWG** lezen via Rust-parser als WASM (route van OpenAEC's `acadifc`/open-2d-studio)
 
-### Fase 4 — Ecosysteem (→ v1.0)
+### Fase 4 — Ecosysteem & AI (→ v1.0)
 1. **Deelbare componentbibliotheken**: templates als bestanden (.o3st), catalogus per fabrikant — Storax als eerste, daarna breder
-2. Volledige meertaligheid (ook statusmeldingen), code signing van de installer, auto-update
-3. Integratie met de OpenAEC-suite en That Open-platformdiensten
+2. **AI-modelleerassistent**: natuurlijke taal → template-plaatsingen ("teken 12 m roosterwand, 2,5 m hoog, langs stramien A") — onze parametrische templates zijn hiervoor al de perfecte commandoset (les van Tekla Model Assistant en Motif)
+3. **Geo-referentie**: nulpunt koppelen aan RD-coördinaten (`IfcMapConversion`), zoals Qonic aan nationale stelsels koppelt
+4. Volledige meertaligheid (ook statusmeldingen), code signing van de installer, auto-update
+5. Integratie met de OpenAEC-suite en That Open-platformdiensten
 
 ---
 
