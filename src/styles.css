@@ -651,6 +651,87 @@ button.mini.accent {
   border-radius: 6px;
 }
 
+.ai-key {
+  width: 148px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ai-prompt {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal {
+  width: min(560px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.modal h2 {
+  font-family: var(--font-head);
+  font-size: 15px;
+  color: var(--amber-soft);
+  margin-bottom: 10px;
+}
+
+.ils-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.5px;
+  margin-bottom: 12px;
+}
+
+.ils-list li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.ils-icon {
+  flex: 0 0 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ils-ok .ils-icon { background: #16653480; color: #6ee7a0; }
+.ils-let-op .ils-icon { background: #a1620780; color: #fbbf24; }
+.ils-fout .ils-icon { background: #7f1d1d80; color: #fda4af; }
+
 /* ---------- statusbalk ---------- */
 .statusbar {
   height: 28px;

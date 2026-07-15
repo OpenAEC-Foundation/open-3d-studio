@@ -74,6 +74,14 @@ export default function App() {
     spacingY: 5,
   });
   const [maxPaneel, setMaxPaneel] = useState(3000);
+  const [ilsReport, setIlsReport] = useState<
+    { eis: string; status: "ok" | "let-op" | "fout"; toelichting: string }[] | null
+  >(null);
+  const [geoRef, setGeoRef] = useState({ enabled: false, rdX: 0, rdY: 0, napZ: 0 });
+  const [aiKey, setAiKey] = useState(() => localStorage.getItem("o3s-apikey") ?? "");
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiMessage, setAiMessage] = useState("");
   const [status, setStatus] = useState("Studio wordt gestart …");
 
   const t = useMemo(() => makeT(lang), [lang]);
@@ -212,6 +220,53 @@ export default function App() {
     ]);
   };
 
+  const runAssistant = async () => {
+    const s = studio();
+    if (!s || !aiKey.trim() || !aiPrompt.trim() || aiBusy) return;
+    setAiBusy(true);
+    setAiMessage("");
+    try {
+      const { askAssistant } = await import("./core/aiAssistant");
+      const grid = gridCfg.enabled
+        ? `Stramien: assen 1..${gridCfg.countX} h.o.h. ${gridCfg.spacingX} m (x), A..${String.fromCharCode(64 + gridCfg.countY)} h.o.h. ${gridCfg.spacingY} m (y).`
+        : "Geen stramien actief.";
+      const antwoord = await askAssistant(aiPrompt, aiKey.trim(), {
+        storeyName: storeys.find((st) => st.id === activeStoreyId)?.name ?? "",
+        gridInfo: grid,
+      });
+      const n = s.applyAssistantPlacements(antwoord.placements);
+      setAiMessage(antwoord.message || (n > 0 ? `${n} element(en) geplaatst.` : "Geen plaatsingen."));
+    } catch (err) {
+      console.error(err);
+      setAiMessage(err instanceof Error ? err.message : "Assistent-aanroep mislukt.");
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const savePreset = async () => {
+    await saveFileAs(
+      JSON.stringify({ app: "o3st", templateId, params }, null, 2),
+      `${templateId}.o3st`,
+      [{ name: "Componentpreset", extensions: ["o3st"] }],
+    );
+  };
+
+  const loadPreset = async () => {
+    const files = await openFilesDialog([{ name: "Componentpreset", extensions: ["o3st"] }], false);
+    if (!files.length) return;
+    try {
+      const json = JSON.parse(await files[0].text());
+      onTemplateChange(json.templateId);
+      const merged = { ...getTemplate(json.templateId).defaults, ...json.params };
+      setParams(merged);
+      studio()?.setCurrentParams(merged);
+    } catch (err) {
+      console.error(err);
+      setStatus("Preset kon niet worden gelezen.");
+    }
+  };
+
   const addSheet = () => {
     const n = sheets.length + 1;
     const sheet: Sheet = {
@@ -277,6 +332,23 @@ export default function App() {
             { id: "dxf", icon: "▱", label: t("btnExportDxf"), onClick: () => studio()?.exportDxf() },
             { id: "prod", icon: "⚙", label: t("btnProductie"), onClick: () => studio()?.exportElementeerRapport(maxPaneel) },
             { id: "csv", icon: "▦", label: t("btnExportCsv"), onClick: exportCsv },
+          ],
+        },
+        {
+          title: t("grpQuality"),
+          items: [
+            {
+              id: "ils",
+              icon: "✓",
+              label: t("btnIls"),
+              onClick: async () => setIlsReport((await studio()?.runIlsCheck()) ?? null),
+            },
+            {
+              id: "bcf",
+              icon: "◉",
+              label: t("btnBcf"),
+              onClick: () => studio()?.exportBcf(textValue !== "Tekst" ? textValue : ""),
+            },
           ],
         },
       ],
@@ -432,6 +504,12 @@ export default function App() {
             )}
             <p className="muted">{selected ? `${selected.name} — ${t("editParams")}` : t("newParams")}</p>
             <ParamsPanel template={template} values={params} onChange={onParamsChange} />
+            {!selected && (
+              <div className="btn-row">
+                <button className="mini" onClick={savePreset}>{t("presetSave")}</button>
+                <button className="mini" onClick={loadPreset}>{t("presetLoad")}</button>
+              </div>
+            )}
             {selected && (
               <div className="selected-tools">
                 <label className="param-row">
@@ -623,6 +701,44 @@ export default function App() {
               <em>mm</em>
             </div>
             <p className="muted">{t("originHint")}</p>
+            <label className="param-row">
+              <span>{t("geoEnabled")}</span>
+              <input
+                type="checkbox"
+                checked={geoRef.enabled}
+                onChange={(e) => {
+                  const next = { ...geoRef, enabled: e.target.checked };
+                  setGeoRef(next);
+                  studio()?.setGeoRef(next);
+                }}
+              />
+            </label>
+            {geoRef.enabled && (
+              <div className="origin-row">
+                {(
+                  [
+                    ["RD X", "rdX"],
+                    ["RD Y", "rdY"],
+                    ["NAP", "napZ"],
+                  ] as const
+                ).map(([lbl, field]) => (
+                  <label key={field}>
+                    <span>{lbl}</span>
+                    <input
+                      type="number"
+                      step={0.001}
+                      value={geoRef[field]}
+                      onChange={(e) => {
+                        const next = { ...geoRef, [field]: Number(e.target.value) };
+                        setGeoRef(next);
+                        studio()?.setGeoRef(next);
+                      }}
+                    />
+                  </label>
+                ))}
+                <em>m</em>
+              </div>
+            )}
           </section>
 
           <section>
@@ -856,8 +972,60 @@ export default function App() {
               </>
             )}
           </section>
+          <section>
+            <h2>{t("panAssistant")}</h2>
+            <label className="param-row">
+              <span>{t("aiKeyLabel")}</span>
+              <input
+                type="password"
+                className="ai-key"
+                value={aiKey}
+                onChange={(e) => {
+                  setAiKey(e.target.value);
+                  localStorage.setItem("o3s-apikey", e.target.value);
+                }}
+              />
+            </label>
+            <textarea
+              className="ai-prompt"
+              rows={3}
+              placeholder={t("aiPromptPlaceholder")}
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+            />
+            <div className="btn-row">
+              <button className="mini accent" disabled={aiBusy || !aiKey.trim() || !aiPrompt.trim()} onClick={runAssistant}>
+                {aiBusy ? t("aiBusy") : t("aiRun")}
+              </button>
+            </div>
+            {aiMessage && <p className="muted">{aiMessage}</p>}
+            <p className="muted">{t("aiHint")}</p>
+          </section>
         </aside>
       </div>
+
+      {ilsReport && (
+        <div className="modal-overlay" onClick={() => setIlsReport(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>{t("ilsTitle")}</h2>
+            <ul className="ils-list">
+              {ilsReport.map((b, i) => (
+                <li key={i} className={`ils-${b.status}`}>
+                  <span className="ils-icon">
+                    {b.status === "ok" ? "✓" : b.status === "let-op" ? "!" : "✕"}
+                  </span>
+                  <span>
+                    <strong>{b.eis}</strong> — {b.toelichting}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="btn-row">
+              <button className="mini accent" onClick={() => setIlsReport(null)}>{t("close")}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer className="statusbar">{status}</footer>
     </div>

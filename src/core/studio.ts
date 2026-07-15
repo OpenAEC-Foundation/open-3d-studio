@@ -77,6 +77,8 @@ export class Studio {
   storeys: Storey[] = [{ id: "storey-0", name: "00 begane grond", elevation: 0 }];
   activeStoreyId = "storey-0";
   grid: GridConfig = { enabled: false, countX: 5, spacingX: 5, countY: 3, spacingY: 5 };
+  /** RD-georeferentie (EPSG:28992), coördinaten in meters */
+  geoRef = { enabled: false, rdX: 0, rdY: 0, napZ: 0 };
   private gridGroup = new THREE.Group();
 
   private undoStack: string[] = [];
@@ -335,6 +337,7 @@ export class Studio {
         origin: this.origin,
         storeys: this.storeys,
         grid: this.grid,
+        geoRef: this.geoRef.enabled ? this.geoRef : undefined,
       });
       if (
         await this.saveAs(bytes, "open-3d-studio_storax-componenten.ifc", {
@@ -424,6 +427,81 @@ export class Studio {
     }
   }
 
+  /** BIM basis ILS-controle van de huidige modelinhoud. */
+  async runIlsCheck() {
+    const { checkIls } = await import("./ilsCheck");
+    this.recomputeMerken();
+    return checkIls(this.elements, this.storeys);
+  }
+
+  setGeoRef(geoRef: { enabled: boolean; rdX: number; rdY: number; napZ: number }) {
+    this.geoRef = { ...geoRef };
+    this.setStatus(
+      geoRef.enabled
+        ? `RD-georeferentie actief: X ${geoRef.rdX}, Y ${geoRef.rdY}, NAP ${geoRef.napZ} m.`
+        : "RD-georeferentie uitgeschakeld.",
+    );
+  }
+
+  /** BCF 2.1-issue van het huidige aanzicht (camera + schermafbeelding). */
+  async exportBcf(title: string) {
+    try {
+      const renderer: THREE.WebGLRenderer = this.world.renderer.three;
+      renderer.render(this.world.scene.three, this.world.camera.three);
+      const dataUrl = renderer.domElement.toDataURL("image/png");
+      const png = Uint8Array.from(atob(dataUrl.split(",")[1]), (c) => c.charCodeAt(0));
+      const { makeBcfIssue } = await import("./bcfExport");
+      const bytes = makeBcfIssue({
+        title: title.trim() || `Issue ${new Date().toLocaleString("nl-NL")}`,
+        camera: this.world.camera.three,
+        snapshotPng: png,
+      });
+      if (await this.saveAs(bytes, "open-3d-studio_issue.bcf", { name: "BCF-issue", extensions: ["bcf", "bcfzip"] })) {
+        this.setStatus("BCF-issue geëxporteerd (met standpunt en schermafbeelding).");
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus("BCF-export mislukt (zie console).");
+    }
+  }
+
+  /** Plaatsingen van de AI-assistent doorvoeren (bouwkundige coördinaten, meters). */
+  applyAssistantPlacements(
+    placements: { templateId: string; start: [number, number]; end: [number, number]; params?: ParamValues }[],
+  ): number {
+    if (placements.length === 0) return 0;
+    this.pushUndo();
+    const elev = this.getActiveStorey().elevation;
+    let geplaatst = 0;
+    for (const p of placements) {
+      let template;
+      try {
+        template = getTemplate(p.templateId);
+      } catch {
+        continue;
+      }
+      const n = (this.elementCounters.get(template.id) ?? 0) + 1;
+      this.elementCounters.set(template.id, n);
+      this.elements.push({
+        id: crypto.randomUUID(),
+        templateId: template.id,
+        name: `${template.name} ${String(n).padStart(2, "0")}`,
+        // bouwkundig (x=oost, y=noord) -> three (x, peil, -y)
+        start: new THREE.Vector3(p.start[0], elev, -p.start[1]),
+        end: new THREE.Vector3(p.end[0], elev, -p.end[1]),
+        params: { ...template.defaults, ...(p.params ?? {}) },
+        storeyId: this.activeStoreyId,
+        opening: null,
+      });
+      geplaatst++;
+    }
+    this.rebuildAuthored();
+    this.emitElements();
+    this.zoomAll();
+    this.setStatus(`Assistent: ${geplaatst} element(en) geplaatst.`);
+    return geplaatst;
+  }
+
   /** 2D-DXF-export van het bovenaanzicht (footprints, lijnen, maten, teksten). */
   async exportDxf() {
     if (this.elements.length === 0 && this.lines.length === 0 && this.measures.length === 0) {
@@ -501,6 +579,7 @@ export class Studio {
       storeys: this.storeys.map((s) => ({ ...s })),
       activeStoreyId: this.activeStoreyId,
       grid: { ...this.grid },
+      geoRef: { ...this.geoRef },
       elements: this.elements.map((e) => ({
         id: e.id,
         templateId: e.templateId,
@@ -540,6 +619,7 @@ export class Studio {
       ? state.activeStoreyId
       : this.storeys[0].id;
     if (state.grid) this.grid = { ...state.grid };
+    if (state.geoRef) this.geoRef = { ...state.geoRef };
     this.elementCounters.clear();
     for (const el of this.elements) {
       this.elementCounters.set(el.templateId, (this.elementCounters.get(el.templateId) ?? 0) + 1);

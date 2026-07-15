@@ -103,6 +103,20 @@ const nl = {
   btnExportDxf: "DXF (2D)",
   btnProductie: "Productie (PDF)",
   maxPanel: "Max. paneelbreedte",
+  grpQuality: "Kwaliteit",
+  btnIls: "ILS-controle",
+  btnBcf: "BCF-issue",
+  ilsTitle: "BIM basis ILS-controle",
+  close: "Sluiten",
+  geoEnabled: "RD-coördinaten (EPSG:28992)",
+  presetSave: "Preset opslaan",
+  presetLoad: "Preset laden",
+  panAssistant: "AI-assistent (experimenteel)",
+  aiKeyLabel: "Claude API-sleutel",
+  aiPromptPlaceholder: "Bijv.: teken een roosterwand van 6 m langs de oost-westrichting op y=0, 2,7 m hoog",
+  aiRun: "Vraag de assistent",
+  aiBusy: "Assistent denkt na …",
+  aiHint: "Gebruikt jouw eigen Anthropic API-sleutel (console.anthropic.com); de sleutel blijft lokaal.",
 };
 
 const en: typeof nl = {
@@ -203,6 +217,20 @@ const en: typeof nl = {
   btnExportDxf: "DXF (2D)",
   btnProductie: "Production (PDF)",
   maxPanel: "Max. panel width",
+  grpQuality: "Quality",
+  btnIls: "ILS check",
+  btnBcf: "BCF issue",
+  ilsTitle: "BIM basis ILS check",
+  close: "Close",
+  geoEnabled: "RD coordinates (EPSG:28992)",
+  presetSave: "Save preset",
+  presetLoad: "Load preset",
+  panAssistant: "AI assistant (experimental)",
+  aiKeyLabel: "Claude API key",
+  aiPromptPlaceholder: "E.g.: draw a 6 m louvre wall east-west at y=0, 2.7 m high",
+  aiRun: "Ask the assistant",
+  aiBusy: "Assistant is thinking …",
+  aiHint: "Uses your own Anthropic API key (console.anthropic.com); the key stays local.",
 };
 
 export const STRINGS: Record<Lang, typeof nl> = { nl, en };

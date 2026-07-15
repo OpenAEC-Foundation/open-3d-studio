@@ -33,6 +33,8 @@ export async function exportElementsToIfc(
     projectName?: string;
     storeys?: Storey[];
     grid?: GridConfig;
+    /** RD-georeferentie (EPSG:28992), meters */
+    geoRef?: { rdX: number; rdY: number; napZ: number };
   } = {},
 ): Promise<Uint8Array> {
   const projectName = opts.projectName ?? "Open 3D Studio — Storax componenten";
@@ -106,6 +108,32 @@ export async function exportElementsToIfc(
     worldOrigin,
     null,
   );
+
+  // -- RD-georeferentie (IfcMapConversion, les van Qonic) --
+  if (opts.geoRef) {
+    const crs = new IFC4.IfcProjectedCRS(
+      label("EPSG:28992"),
+      text("Amersfoort / RD New — Nederlands stelsel van de Rijksdriehoeksmeting"),
+      label("EPSG"),
+      label("NAP"),
+      null,
+      null,
+      null,
+    );
+    api.WriteLine(
+      modelID,
+      new IFC4.IfcMapConversion(
+        context,
+        crs,
+        len(opts.geoRef.rdX),
+        len(opts.geoRef.rdY),
+        len(opts.geoRef.napZ),
+        real(1),
+        real(0),
+        real(1),
+      ),
+    );
+  }
 
   // -- project en ruimtelijke structuur --
   const project = new IFC4.IfcProject(
