@@ -1,4 +1,5 @@
 import type { ComponentTemplate } from "../core/types";
+import { o3stToTemplate, type O3stFile } from "../core/o3stTemplate";
 import { storaxLamelWand } from "./storaxLamelWand";
 import { storaxRooster } from "./storaxRooster";
 import { storaxDrager } from "./storaxDrager";
@@ -57,27 +58,74 @@ for (const t of [...explicit, ...autoloaded]) {
   templates.push(t);
 }
 
+/** Extra templates die na build-tijd worden ingeladen (`.o3st` community-files,
+ *  plugin-registrations). Nieuwe registraties overrulen bestaande id's. */
+const runtime: ComponentTemplate[] = [];
+
+/** Registreer een template dat na app-start is toegevoegd. Roept event-listeners aan. */
+export function registerRuntimeTemplate(t: ComponentTemplate): void {
+  const existing = runtime.findIndex((r) => r.id === t.id);
+  if (existing >= 0) runtime.splice(existing, 1);
+  runtime.push(t);
+  for (const cb of runtimeListeners) cb();
+}
+
+/** Verwijder een runtime-template. Bouw-in-tijd templates worden niet geraakt. */
+export function unregisterRuntimeTemplate(id: string): boolean {
+  const i = runtime.findIndex((r) => r.id === id);
+  if (i < 0) return false;
+  runtime.splice(i, 1);
+  for (const cb of runtimeListeners) cb();
+  return true;
+}
+
+/** Laadt een .o3st-bestand als runtime-template. */
+export function loadO3stTemplate(file: O3stFile): ComponentTemplate {
+  const t = o3stToTemplate(file);
+  registerRuntimeTemplate(t);
+  return t;
+}
+
+const runtimeListeners = new Set<() => void>();
+/** Abonneer op wijzigingen aan de runtime-lijst; retourneert de unsubscribe. */
+export function subscribeRuntimeTemplates(cb: () => void): () => void {
+  runtimeListeners.add(cb);
+  return () => runtimeListeners.delete(cb);
+}
+
+/** Alle bekende templates, bouw-in-tijd + runtime samengevoegd (runtime wint bij dupe). */
+export function allTemplates(): ComponentTemplate[] {
+  const merged = new Map<string, ComponentTemplate>();
+  for (const t of templates) merged.set(t.id, t);
+  for (const t of runtime) merged.set(t.id, t);
+  return [...merged.values()];
+}
+
 export function getTemplate(id: string): ComponentTemplate {
+  const rt = runtime.find((tt) => tt.id === id);
+  if (rt) return rt;
   const t = templates.find((tt) => tt.id === id);
   if (!t) throw new Error(`Onbekend componenttemplate: ${id}`);
   return t;
 }
 
 /** Templates gegroepeerd op hun NL-SfB-hoofdcategorie (eerste twee cijfers).
- *  Handig voor het lagenpaneel: `21`, `22`, `23`, … als sectiekop. */
+ *  Handig voor het lagenpaneel: `21`, `22`, `23`, … als sectiekop.
+ *  Omvat óók runtime-templates (.o3st/plugin/IFC-family). */
 export function templatesByNlSfb(): Record<string, ComponentTemplate[]> {
   const groups: Record<string, ComponentTemplate[]> = {};
-  for (const t of templates) {
+  for (const t of allTemplates()) {
     const code = t.nlSfb?.match(/^\d{2}/)?.[0] ?? "??";
     (groups[code] ??= []).push(t);
   }
   return groups;
 }
 
-/** Templates gegroepeerd op fabrikant — voor de "manufacturer" tab in v1.0. */
+/** Templates gegroepeerd op fabrikant — voor de "manufacturer" tab in v1.0.
+ *  Omvat óók runtime-templates (.o3st/plugin/IFC-family). */
 export function templatesByManufacturer(): Record<string, ComponentTemplate[]> {
   const groups: Record<string, ComponentTemplate[]> = {};
-  for (const t of templates) {
+  for (const t of allTemplates()) {
     const m = t.manufacturer ?? "Generiek";
     (groups[m] ??= []).push(t);
   }

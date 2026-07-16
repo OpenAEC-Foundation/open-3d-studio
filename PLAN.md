@@ -1,15 +1,24 @@
 # Studie & plan — de grote sprong van Open 3D Studio
 
-*Versie 1.3 — juli 2026. Levend document: prioriteiten schuiven op basis van testervaringen.*
+*Versie 1.5 — juli 2026. Levend document: prioriteiten schuiven op basis van testervaringen.*
 
-> **Stand v0.4.0-rc (2026-07-16)**: alle 9 sprints uit versie 1.2 werkend + de productie-diepgang.
-> **40 templates** verspreid over 16 NL-SfB-categorieën, **14 IFC-entiteiten**, alle 4 placement-kinds
-> bewezen (linear/point/surface/assembly), **198 constructieprofielen** in de catalogus. IFC-export
-> gaat door de generieke entity-mapper met `PredefinedType`, `IfcMaterialLayerSetUsage`,
-> `IfcMaterialProfileSetUsage` en `IfcRelFillsElement` voor hosting. DWG-export live via
-> `acadrust` 0.4.1 (MPL-2.0) in de Tauri-backend. BCF 3.0 import + export met `jszip`.
-> ClipEdges snijlijnen bij doorsnedes. Sheet-preview MVP met SVG-paper en sleepbare viewports.
-> Fase Nul (fragments-native selectie via Highlighter + undo/redo in header) was al af.
+> **Stand v0.6.0 (2026-07-16)**: alle 7 v1.0-scope-items werkend als eerste versie,
+> plus de 10 bevindingen uit de multi-agent codereview opgelost (zie RELEASE_NOTES).
+> **.o3st template-editor** — JSON-formaat + veilige procedurele shape-kinds
+> (`layered`/`solid-box`/`profile-swept`) + runtime-registry (`loadO3stTemplate`,
+> `subscribeRuntimeTemplates`). **IFC-family-import** converteert externe IFC's
+> naar `IfcBuildingElementProxy`-templates die live in de dropdown verschijnen.
+> **11 MEP-templates** (pipe/duct/cable + fittings + terminals + light + cable
+> carrier) in `src/catalog/50_mep/`; `IfcEntityName` en `ifcEntityMap` uitgebreid
+> met de MEP-entiteiten. **Wapening-generator** (B500B, configureerbare Ø + hoh +
+> dekking) met CSV-BOM + kg-totalen. **Speckle-connector** via directe REST +
+> GraphQL (geen SDK). **Plugin-API** met `.o3sp`-JS-plugins in een `new Function`-
+> sandbox. **Doorsnede-SVG** met hatch per IfcMaterial-categorie + `sectionAsAnnotation`-
+> payload voor de v0.7 IfcAnnotation-round-trip. **Ecosysteem-ribbon** met vijf
+> nieuwe knoppen; Speckle- en Plugin-panelen in de sidepanel.
+>
+> Voorheen (v0.5-rc.1): IDS-engine (BIM basis ILS 2.0 + Bbl Rc + ILS O&E SO/VO/DO/TO/UO),
+> Rc/U-waarden, sheet-annotaties, structural aspect IFC, COBie 2.4, fasering-UI.
 
 Dit document analyseert wat Open 3D Studio kan leren van vier gevestigde modelleerpakketten
 (Revit, Tekla Structures, HSBcad, Blender/Bonsai), toetst de huidige stand aan de

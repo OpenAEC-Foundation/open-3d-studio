@@ -2,7 +2,7 @@ import * as THREE from "three";
 import * as OBC from "@thatopen/components";
 import { ClipEdges } from "@thatopen/components-front";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
-import { getTemplate, templates } from "../catalog/registry";
+import { allTemplates as allRegistryTemplates, getTemplate, templates } from "../catalog/registry";
 import type {
   GridConfig,
   LineSegment,
@@ -34,6 +34,24 @@ export type ToolName =
   | "section";
 export type { ViewName };
 
+/** Fase-instellingen voor de view: welke fasen zichtbaar zijn en welke grafische
+ *  override (kleur, opacity, wireframe-streep) elke fase krijgt. v0.5-S7. */
+export interface PhaseSettings {
+  visible: Record<import("./types").ElementPhase, boolean>;
+  color: Record<import("./types").ElementPhase, string>;
+  opacity: Record<import("./types").ElementPhase, number>;
+  wireframe: Record<import("./types").ElementPhase, boolean>;
+}
+
+export const DEFAULT_PHASE_SETTINGS: PhaseSettings = {
+  visible: { new: true, existing: true, demolished: true, temporary: true },
+  // amber = huidige stijl (nieuwbouw krijgt template.color); grijs voor bestaand;
+  // dieprood voor sloop; helder geel voor tijdelijk.
+  color: { new: "", existing: "#7f7a70", demolished: "#c23a2a", temporary: "#e5c344" },
+  opacity: { new: 1, existing: 0.6, demolished: 0.55, temporary: 0.75 },
+  wireframe: { new: false, existing: false, demolished: true, temporary: false },
+};
+
 const MM = 0.001;
 const SNAP = 0.05; // 50 mm raster-snap bij het tekenen
 
@@ -51,6 +69,7 @@ export interface StudioCallbacks {
   onGridChanged?: (grid: GridConfig) => void;
   onOriginChanged?: (origin: ProjectOrigin) => void;
   onGeoRefChanged?: (geoRef: { enabled: boolean; rdX: number; rdY: number; napZ: number }) => void;
+  onPhaseSettingsChanged?: (phaseSettings: PhaseSettings) => void;
   onStatus?: (msg: string) => void;
 }
 
@@ -82,6 +101,8 @@ export class Studio {
   grid: GridConfig = { enabled: false, countX: 5, spacingX: 5, countY: 3, spacingY: 5 };
   /** RD-georeferentie (EPSG:28992), coördinaten in meters */
   geoRef = { enabled: false, rdX: 0, rdY: 0, napZ: 0 };
+  /** v0.5-S7: fase-view-filters + graphic overrides. */
+  phaseSettings: PhaseSettings = JSON.parse(JSON.stringify(DEFAULT_PHASE_SETTINGS));
   private gridGroup = new THREE.Group();
 
   private undoStack: string[] = [];
@@ -327,6 +348,9 @@ export class Studio {
           params: { ...d.params },
           storeyId: resolveStorey(d),
           opening: d.opening ?? null,
+          // fase overleeft de IFC-round-trip; hostId niet — element-ids worden
+          // bij heropenen opnieuw gegenereerd, dus die koppeling zou bungelen
+          phase: d.phase ?? "new",
         });
       }
       this.storeys.sort((a, b) => a.elevation - b.elevation);
@@ -462,6 +486,172 @@ export class Studio {
     const { checkIls } = await import("./ilsCheck");
     this.recomputeMerken();
     return checkIls(this.elements, this.storeys);
+  }
+
+  /** Draai een specifieke IDS-preset (v0.5-S1 + S6). */
+  async runIdsPreset(presetId: string) {
+    const { checkWithPreset } = await import("./ilsCheck");
+    this.recomputeMerken();
+    return checkWithPreset(presetId, this.elements, this.storeys);
+  }
+
+  /** Draai een geïmporteerd IDS-XML-bestand tegen het model (v0.5-S1). */
+  async runIdsFile(file: File) {
+    const { checkWithIdsXml } = await import("./ilsCheck");
+    this.recomputeMerken();
+    const xml = await file.text();
+    return checkWithIdsXml(xml, this.elements, this.storeys);
+  }
+
+  /** Elementen die in productie-/asset-exports thuishoren: sloop telt niet mee.
+   *  (De hoofd-IFC-export behoudt wél alle fasen en tagt ze met een Fase-property.) */
+  private productionElements(): PlacedElement[] {
+    return this.elements.filter((e) => (e.phase ?? "new") !== "demolished");
+  }
+
+  /** Structural view exporteren als aspect-IFC (v0.5-S4). */
+  async exportStructural() {
+    const els = this.productionElements();
+    if (els.length === 0) {
+      this.setStatus("Geen (niet-sloop) elementen — teken eerst een draagconstructie.");
+      return;
+    }
+    this.setStatus("Structural view maken …");
+    try {
+      const { exportStructuralView } = await import("./structuralExport");
+      const bytes = await exportStructuralView(els, {
+        projectName: "Open 3D Studio — structural aspect",
+        storeys: this.storeys,
+      });
+      if (await this.saveAs(bytes, "open-3d-studio_structural.ifc", { name: "IFC (structural aspect)", extensions: ["ifc"] })) {
+        this.setStatus(`Structural IFC geëxporteerd (${els.length} elementen, sloop uitgesloten).`);
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus("Structural export mislukt (zie console).");
+    }
+  }
+
+  /** IFC-family importeren als proxy-templates (v0.6-2). */
+  async importIfcFamily(file: File): Promise<{ added: number; skipped: number; source: string }> {
+    try {
+      const { importIfcFamily } = await import("./ifcFamilyImport");
+      const res = await importIfcFamily(file);
+      this.setStatus(
+        `Bibliotheek geladen: ${res.proxies.length} template(s) uit ${res.sourceName}` +
+          (res.skipped ? ` (${res.skipped} overgeslagen zonder geometrie)` : ""),
+      );
+      return { added: res.proxies.length, skipped: res.skipped, source: res.sourceName };
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`Bibliotheek laden mislukt: ${err instanceof Error ? err.message : String(err)}`);
+      return { added: 0, skipped: 0, source: file.name };
+    }
+  }
+
+  /** Wapening-BOM van huidige selectie of hele model als CSV (v0.6-4). */
+  async exportRebarBom() {
+    const els = this.productionElements();
+    if (els.length === 0) {
+      this.setStatus("Nog geen (niet-sloop) elementen — teken eerst iets met beton.");
+      return;
+    }
+    try {
+      const { rebarBomCsv, rebarTotalsByDiameter } = await import("./rebarGenerator");
+      const csv = rebarBomCsv(els);
+      const totals = rebarTotalsByDiameter(els);
+      const totalKg = [...totals.values()].reduce((s, t) => s + t.totalKg, 0);
+      if (
+        await this.saveAs("﻿" + csv, "open-3d-studio_wapening.csv", {
+          name: "Wapening-BOM (CSV)",
+          extensions: ["csv"],
+        })
+      ) {
+        this.setStatus(
+          `Wapening geëxporteerd (${[...totals.keys()].length} diameters, ${totalKg.toFixed(1)} kg totaal).`,
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus("Wapening-export mislukt (zie console).");
+    }
+  }
+
+  /** Speckle push (v0.6-5). Config via UI in het Speckle-paneel. */
+  async pushSpeckle(cfg: { host?: string; token: string; streamId: string; branchName?: string }) {
+    try {
+      const { pushToSpeckle } = await import("./speckleConnector");
+      const res = await pushToSpeckle(this.elements, this.storeys, cfg);
+      this.setStatus(res.message);
+      return res;
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`Speckle-push mislukt: ${err instanceof Error ? err.message : String(err)}`);
+      return { ok: false, message: String(err) };
+    }
+  }
+
+  /** Plugin laden en draaien (v0.6-6). */
+  async runPlugin(source: string) {
+    const { loadPlugin } = await import("./pluginApi");
+    const res = await loadPlugin(source, {
+      getElements: () => this.elements,
+      getStoreys: () => this.storeys,
+      applyPlacements: async (placements) => {
+        const before = this.elements.length;
+        this.applyAssistantPlacements(placements as any);
+        return this.elements.slice(before).map((e) => e.id);
+      },
+      onLog: (msg) => this.setStatus(`Plugin: ${msg}`),
+    });
+    this.setStatus(res.message);
+    return res;
+  }
+
+  /** Doorsnede fase 2 — SVG exporteren met hatch per materiaal (v0.6-7). */
+  async exportSectionSvg(plane: { normal: "x" | "z"; offset: number }, scale = 50) {
+    if (this.elements.length === 0) {
+      this.setStatus("Geen elementen om te doorsnijden.");
+      return;
+    }
+    try {
+      const { renderSectionSvg } = await import("./sectionSvg");
+      const svg = renderSectionSvg(this.elements, plane, { scale });
+      if (
+        await this.saveAs(svg, `open-3d-studio_doorsnede.svg`, {
+          name: "SVG (doorsnede)",
+          extensions: ["svg"],
+        })
+      ) {
+        this.setStatus(`Doorsnede-SVG geëxporteerd (${plane.normal} = ${plane.offset.toFixed(2)} m, 1:${scale}).`);
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus("Doorsnede-SVG mislukt (zie console).");
+    }
+  }
+
+  /** COBie 2.4-export als ZIP met CSV-tabbladen (v0.5-S5).
+   *  COBie beschrijft het op te leveren gebouw — sloop-elementen doen niet mee. */
+  async exportCobie() {
+    const els = this.productionElements();
+    if (els.length === 0) {
+      this.setStatus("Geen (niet-sloop) elementen — teken eerst iets voor de COBie-export.");
+      return;
+    }
+    try {
+      this.recomputeMerken();
+      const { exportCobieZip } = await import("./cobieExport");
+      const blob = await exportCobieZip(els, this.storeys, {
+        projectName: "Open 3D Studio project",
+      });
+      if (await this.saveAs(blob, "open-3d-studio_cobie.zip", { name: "COBie (ZIP van CSV's)", extensions: ["zip"] })) {
+        this.setStatus(`COBie-export klaar (${els.length} components, sloop uitgesloten).`);
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus("COBie-export mislukt (zie console).");
+    }
   }
 
   setGeoRef(geoRef: { enabled: boolean; rdX: number; rdY: number; napZ: number }) {
@@ -609,16 +799,17 @@ export class Studio {
     }
   }
 
-  /** Elementeer- en productierapport (HSBcad-principe). */
+  /** Elementeer- en productierapport (HSBcad-principe). Sloop wordt niet geproduceerd. */
   async exportElementeerRapport(maxPaneelbreedteMm: number) {
-    if (this.elements.length === 0) {
-      this.setStatus("Nog geen elementen om te elementeren.");
+    const els = this.productionElements();
+    if (els.length === 0) {
+      this.setStatus("Nog geen (niet-sloop) elementen om te elementeren.");
       return;
     }
     try {
       this.recomputeMerken();
       const { maakElementeerRapport } = await import("./elementeren");
-      const blob = await maakElementeerRapport(this.elements, maxPaneelbreedteMm);
+      const blob = await maakElementeerRapport(els, maxPaneelbreedteMm);
       if (
         await this.saveAs(blob, "open-3d-studio_productierapport.pdf", {
           name: "PDF",
@@ -626,7 +817,7 @@ export class Studio {
         })
       ) {
         this.setStatus(
-          `Productierapport geëxporteerd (${this.elements.length} element(en), max. paneel ${maxPaneelbreedteMm} mm).`,
+          `Productierapport geëxporteerd (${els.length} element(en), max. paneel ${maxPaneelbreedteMm} mm).`,
         );
       }
     } catch (err) {
@@ -668,6 +859,10 @@ export class Studio {
         storeyId: e.storeyId,
         opening: e.opening ? { ...e.opening } : null,
         merk: e.merk,
+        // v0.6-fix: fasering en hosting horen de undo/save-round-trip te overleven
+        phase: e.phase,
+        hostId: e.hostId,
+        spaceId: e.spaceId,
       })),
       lines: this.lines.map((l) => ({ id: l.id, a: v(l.a), b: v(l.b) })),
       measures: this.measures.map((m) => ({ id: m.id, a: v(m.a), b: v(m.b), length: m.length })),
@@ -679,7 +874,20 @@ export class Studio {
   restoreProject(state: any, opts: { silent?: boolean } = {}) {
     const v = (a: number[]) => new THREE.Vector3(a[0], a[1], a[2]);
     this.cancelDrawing();
-    this.elements = (state.elements ?? []).map((e: any) => ({
+    // Elementen met een onbekend templateId overslaan (runtime-templates uit
+    // .o3st/plugins/IFC-family kunnen na een herstart ontbreken) — anders gooit
+    // rebuildAuthored en blijft de studio half-hersteld achter.
+    const rawElements: any[] = state.elements ?? [];
+    const known = rawElements.filter((e: any) => {
+      try {
+        getTemplate(e.templateId);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const skipped = rawElements.length - known.length;
+    this.elements = known.map((e: any) => ({
       ...e,
       start: v(e.start),
       end: v(e.end),
@@ -717,7 +925,12 @@ export class Studio {
     this.callbacks.onSelectionChanged?.(null);
     if (!opts.silent) {
       this.zoomAll();
-      this.setStatus(`Project geladen: ${this.elements.length} element(en).`);
+      this.setStatus(
+        `Project geladen: ${this.elements.length} element(en).` +
+          (skipped > 0
+            ? ` ${skipped} element(en) overgeslagen — template ontbreekt (laad eerst de .o3st/plugin/bibliotheek en open opnieuw).`
+            : ""),
+      );
     }
   }
 
@@ -1089,6 +1302,11 @@ export class Studio {
     this.emitElements();
   }
   getLayers(): { name: string; visible: boolean }[] {
+    // Categorieën van runtime-templates (.o3st/plugin/IFC-family) verschijnen
+    // hier lazily — de constructor kent alleen de build-tijd catalogus.
+    for (const t of allRegistryTemplates()) {
+      if (!this.layerVisibility.has(t.category)) this.layerVisibility.set(t.category, true);
+    }
     return [...this.layerVisibility.entries()].map(([name, visible]) => ({ name, visible }));
   }
 
@@ -1215,7 +1433,21 @@ export class Studio {
     if (!el) return;
     this.pushUndo();
     el.phase = phase;
+    this.rebuildAuthored();
     this.emitElements();
+  }
+
+  /** v0.5-S7: fase-view-instellingen wijzigen (zichtbaarheid + graphic overrides).
+   *  Werkt direct door in de 3D-view én in export van sheets. */
+  setPhaseSettings(patch: Partial<PhaseSettings>) {
+    this.phaseSettings = {
+      visible: { ...this.phaseSettings.visible, ...(patch.visible ?? {}) },
+      color: { ...this.phaseSettings.color, ...(patch.color ?? {}) },
+      opacity: { ...this.phaseSettings.opacity, ...(patch.opacity ?? {}) },
+      wireframe: { ...this.phaseSettings.wireframe, ...(patch.wireframe ?? {}) },
+    };
+    this.rebuildAuthored();
+    this.callbacks.onPhaseSettingsChanged?.(this.phaseSettings);
   }
 
   removeElement(id: string) {
@@ -1735,7 +1967,13 @@ export class Studio {
     start: THREE.Vector3,
     end: THREE.Vector3,
     params: ParamValues,
-    opts: { preview?: boolean; selected?: boolean } = {},
+    opts: {
+      preview?: boolean;
+      selected?: boolean;
+      phaseColor?: string;
+      phaseOpacity?: number;
+      phaseWireframe?: boolean;
+    } = {},
     templateId = this.activeTemplateId,
     opening: Opening | null = null,
   ): THREE.Group | null {
@@ -1836,11 +2074,19 @@ export class Studio {
     for (const el of this.elements) {
       const template = getTemplate(el.templateId);
       if (this.layerVisibility.get(template.category) === false) continue;
+      const phase = el.phase ?? "new";
+      if (!this.phaseSettings.visible[phase]) continue;
+      const overrideColor = this.phaseSettings.color[phase];
       const group = this.buildComponentGroup(
         el.start,
         el.end,
         el.params,
-        { selected: el.id === this.selectedId },
+        {
+          selected: el.id === this.selectedId,
+          phaseColor: overrideColor && phase !== "new" ? overrideColor : undefined,
+          phaseOpacity: this.phaseSettings.opacity[phase],
+          phaseWireframe: this.phaseSettings.wireframe[phase],
+        },
         el.templateId,
         el.opening ?? null,
       );

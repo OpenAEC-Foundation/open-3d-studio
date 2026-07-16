@@ -1,7 +1,7 @@
 {
   "name": "open-3d-studio",
   "private": true,
-  "version": "0.4.0-rc.1",
+  "version": "0.6.0",
   "description": "Open source 3D-modelleerstudio met IFC als native output - OpenAEC-stijl, aangedreven door That Open Engine",
   "type": "module",
   "scripts": {

@@ -1,4 +1,4 @@
-import { templates } from "../catalog/registry";
+import { allTemplates } from "../catalog/registry";
 
 /** AI-modelleerassistent (experimenteel): natuurlijke taal → template-plaatsingen.
  *
@@ -26,7 +26,8 @@ export async function askAssistant(
   apiKey: string,
   context: { storeyName: string; gridInfo: string },
 ): Promise<AiAntwoord> {
-  const catalog = templates.map((t) => ({
+  // allTemplates(): ook runtime-templates (.o3st/plugin/IFC-family) zijn AI-plaatsbaar
+  const catalog = allTemplates().map((t) => ({
     templateId: t.id,
     naam: t.name,
     standaardParameters: t.defaults,

@@ -48,18 +48,30 @@ export function buildElementGroup(
   template: ComponentTemplate,
   length: number,
   params: ParamValues,
-  opts: { preview?: boolean; selected?: boolean } = {},
+  opts: {
+    preview?: boolean;
+    selected?: boolean;
+    /** Grafische override op basis van bouwkundige fase (v0.5).
+     *  Kleur overschrijft template.color; opacity werkt bovenop preview-alpha. */
+    phaseColor?: string;
+    phaseOpacity?: number;
+    /** Streeplijnstijl (bv. te slopen): rendert extra wireframe over de mesh. */
+    phaseWireframe?: boolean;
+  } = {},
   opening?: Opening | null,
 ): THREE.Group {
   const group = new THREE.Group();
   const solids = elementSolids(template, length, params, opening);
 
+  const baseColor = opts.phaseColor ?? template.color(params);
+  const opacityRaw = (opts.preview ? 0.55 : 1) * (opts.phaseOpacity ?? 1);
+  const transparent = opts.preview || (opts.phaseOpacity !== undefined && opts.phaseOpacity < 1);
   const material = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(template.color(params)),
+    color: new THREE.Color(baseColor),
     roughness: 0.55,
     metalness: 0.35,
-    transparent: !!opts.preview,
-    opacity: opts.preview ? 0.55 : 1,
+    transparent,
+    opacity: opacityRaw,
     emissive: opts.selected ? new THREE.Color("#d97706") : new THREE.Color("#000000"),
     emissiveIntensity: opts.selected ? 0.45 : 0,
   });
@@ -71,6 +83,20 @@ export function buildElementGroup(
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     group.add(mesh);
+    if (opts.phaseWireframe) {
+      const edges = new THREE.EdgesGeometry(geometry);
+      const line = new THREE.LineSegments(
+        edges,
+        new THREE.LineDashedMaterial({
+          color: new THREE.Color(baseColor).offsetHSL(0, 0.2, -0.1),
+          dashSize: 0.15,
+          gapSize: 0.08,
+        }),
+      );
+      line.position.copy(mesh.position);
+      line.computeLineDistances();
+      group.add(line);
+    }
   }
 
   return group;

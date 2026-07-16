@@ -1,8 +1,18 @@
 import type { PlacedElement, Storey } from "./types";
 import { getTemplate } from "../catalog/registry";
+import { parseIdsXml } from "./ids/parser";
+import { runIds } from "./ids/engine";
+import { IDS_PRESETS } from "./ids/presets";
 
-/** Ingebouwde BIM basis ILS 2.0-controle vóór IFC-export.
- *  Bron van de eisen: digiGO — BIM basis ILS (versie 2.0). */
+/** Ingebouwde controle vóór IFC-export. Sinds v0.5 gedreven door een IDS-engine
+ *  (buildingSMART IDS v1.0) i.p.v. hardcoded regels. Default: BIM basis ILS 2.0.
+ *  Een geïmporteerd IDS-XML kan als vervanging of aanvulling gedraaid worden.
+ *
+ *  Naast de IDS-specificaties draait áltijd een vaste set model-structuurchecks
+ *  (`basisChecks`): eisen die IDS-facets niet kunnen uitdrukken omdat ze over
+ *  het model als geheel gaan (verdiepingsnaamgeving, wees-elementen, gereserveerde
+ *  pset-prefix, dragend/NL-SfB-consistentie, ontbrekende templates). Deze
+ *  bestonden al in v0.4 en mogen bij de IDS-migratie niet verloren gaan. */
 
 export interface IlsBevinding {
   eis: string;
@@ -10,14 +20,13 @@ export interface IlsBevinding {
   toelichting: string;
 }
 
-export function checkIls(elements: PlacedElement[], storeys: Storey[]): IlsBevinding[] {
-  const bevindingen: IlsBevinding[] = [];
+/** Model-structuurchecks die buiten het bereik van IDS-facets vallen. */
+export function basisChecks(elements: PlacedElement[], storeys: Storey[]): IlsBevinding[] {
+  const out: IlsBevinding[] = [];
   const add = (eis: string, status: IlsBevinding["status"], toelichting: string) =>
-    bevindingen.push({ eis, status, toelichting });
+    out.push({ eis, status, toelichting });
 
-  add("Uitwisselformaat", "ok", "Export als IFC4 (STEP).");
-
-  // bouwlaagindeling en naamgeving
+  // 1. Bouwlaagnaamgeving ("00 begane grond")
   const slechteNamen = storeys.filter((s) => !/^\d{2} /.test(s.name));
   if (slechteNamen.length === 0) {
     add("Bouwlaagindeling", "ok", `${storeys.length} bouwlaag/-lagen, naamgeving conform ("00 begane grond").`);
@@ -28,6 +37,8 @@ export function checkIls(elements: PlacedElement[], storeys: Storey[]): IlsBevin
       `Naamgeving hoort te beginnen met twee cijfers: ${slechteNamen.map((s) => `"${s.name}"`).join(", ")}.`,
     );
   }
+
+  // 2. Elementen zonder geldige bouwlaag
   const zonderStorey = elements.filter((e) => !storeys.some((s) => s.id === e.storeyId));
   if (zonderStorey.length > 0) {
     add("Bouwlaagkoppeling", "let-op", `${zonderStorey.length} element(en) zonder geldige bouwlaag (vallen terug op de onderste).`);
@@ -35,52 +46,80 @@ export function checkIls(elements: PlacedElement[], storeys: Storey[]): IlsBevin
     add("Bouwlaagkoppeling", "ok", "Alle elementen zijn aan een bouwlaag gekoppeld.");
   }
 
-  // per gebruikt template: entiteit, NL-SfB, materiaal, pset-naamgeving, consistentie
-  const gebruikt = [...new Set(elements.map((e) => e.templateId))].map((id) => getTemplate(id));
+  // 3-5. Per gebruikt template: pset-prefix, dragend/NL-SfB, bestaan van het template
+  const onbekend: string[] = [];
+  const gebruikt = [...new Set(elements.map((e) => e.templateId))]
+    .map((id) => {
+      try {
+        return getTemplate(id);
+      } catch {
+        onbekend.push(id);
+        return null;
+      }
+    })
+    .filter((t): t is NonNullable<typeof t> => t !== null);
+  if (onbekend.length > 0) {
+    add(
+      "Templates aanwezig",
+      "fout",
+      `${onbekend.length} element(en) verwijzen naar een onbekend template (${onbekend.slice(0, 3).join(", ")}${onbekend.length > 3 ? " …" : ""}) — laad de bijbehorende .o3st/plugin/bibliotheek. Deze elementen worden door de IDS-controle overgeslagen.`,
+    );
+  }
   for (const t of gebruikt) {
-    add("Juiste entiteit", "ok", `${t.name} → ${t.ifcEntity} met TypeEnumeration (ontwerpgarantie van het template).`);
-    if (t.nlSfb && /^\d{2}\.\d{2}$/.test(t.nlSfb)) {
-      add("NL-SfB (viercijferig)", "ok", `${t.name}: ${t.nlSfb}.`);
-    } else if (t.nlSfb) {
-      add("NL-SfB (viercijferig)", "let-op", `${t.name}: "${t.nlSfb}" is niet viercijferig (xx.xx).`);
-    } else {
-      add("NL-SfB (viercijferig)", "fout", `${t.name}: geen NL-SfB-code — vul nlSfb in het template in.`);
-    }
-    if (t.material) add("Materiaal", "ok", `${t.name}: ${t.material}.`);
-    else add("Materiaal", "fout", `${t.name}: geen materiaal — vul material in het template in.`);
-    // eigen psets mogen de gereserveerde buildingSMART-prefix niet gebruiken
     if (/^Pset_/i.test(t.psetName)) {
       add("Pset-naamgeving", "fout", `${t.name}: eigen property set "${t.psetName}" gebruikt de gereserveerde prefix "Pset_".`);
-    } else {
-      add("Pset-naamgeving", "ok", `${t.name}: eigen pset "${t.psetName}" zonder gereserveerde prefix.`);
     }
-    // LoadBearing hoort te sporen met de NL-SfB-hoofdgroep (dragend vs niet-dragend)
     if (t.loadBearing && t.nlSfb?.startsWith("22.2")) {
       add("Consistentie dragend/NL-SfB", "let-op", `${t.name}: LoadBearing=true maar NL-SfB ${t.nlSfb} (niet-constructieve binnenwanden).`);
     }
   }
+  return out;
+}
 
-  // naam & type
-  const naamloos = elements.filter((e) => !e.name?.trim());
-  if (naamloos.length === 0 && elements.length > 0) add("Naam en Type", "ok", "Alle elementen hebben een naam; typeobjecten worden geëxporteerd.");
-  if (naamloos.length > 0) add("Naam en Type", "fout", `${naamloos.length} element(en) zonder naam.`);
+/** Backwards-compatible entry point: draait de default preset (BIM basis ILS 2.0). */
+export function checkIls(elements: PlacedElement[], storeys: Storey[]): IlsBevinding[] {
+  return checkWithPreset("bim-basis-ils-2", elements, storeys);
+}
 
-  // doorbraken/sparingen
-  const metSparing = elements.filter((e) => e.opening);
-  add(
-    "Doorbraken en sparingen",
-    "ok",
-    metSparing.length > 0
-      ? `${metSparing.length} sparing(en) als IfcOpeningElement + IfcRelVoidsElement.`
-      : "Geen sparingen in het model.",
-  );
+/** Draai één van de ingebouwde presets. */
+export function checkWithPreset(
+  presetId: string,
+  elements: PlacedElement[],
+  storeys: Storey[],
+): IlsBevinding[] {
+  const preset = IDS_PRESETS[presetId];
+  if (!preset) {
+    return [{ eis: "IDS-preset onbekend", status: "fout", toelichting: `Preset "${presetId}" bestaat niet.` }];
+  }
+  try {
+    return [...basisChecks(elements, storeys), ...runIds(parseIdsXml(preset.xml), elements, storeys)];
+  } catch (err) {
+    return [{
+      eis: preset.title,
+      status: "fout",
+      toelichting: `IDS-preset "${preset.title}" kon niet worden gedraaid: ${err instanceof Error ? err.message : String(err)}`,
+    }];
+  }
+}
 
-  add("Geen proxies", "ok", "Er worden geen IfcBuildingElementProxy-objecten geëxporteerd (ontwerpgarantie).");
-  add(
-    "Basis-psets",
-    "ok",
-    "LoadBearing en IsExternal (Pset_WallCommon e.d.) worden per template geëxporteerd. FireRating volgt als template-parameter.",
-  );
+/** Draai een zelfaangeleverd IDS-XML (bestand-picker in de UI). */
+export function checkWithIdsXml(
+  idsXml: string,
+  elements: PlacedElement[],
+  storeys: Storey[],
+): IlsBevinding[] {
+  try {
+    return [...basisChecks(elements, storeys), ...runIds(parseIdsXml(idsXml), elements, storeys)];
+  } catch (err) {
+    return [{
+      eis: "IDS-bestand",
+      status: "fout",
+      toelichting: `Kan IDS-XML niet lezen: ${err instanceof Error ? err.message : String(err)}`,
+    }];
+  }
+}
 
-  return bevindingen;
+/** Titel + IDs van alle beschikbare presets (voor de UI-dropdown). */
+export function listPresets(): { id: string; title: string }[] {
+  return Object.entries(IDS_PRESETS).map(([id, { title }]) => ({ id, title }));
 }

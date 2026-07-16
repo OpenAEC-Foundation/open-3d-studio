@@ -22,9 +22,9 @@ export const platDak: ComponentTemplate = {
   placementKind: "surface",
   materialLayers: [
     { material: "Dampscherm", thicknessMm: 1, category: "membrane" },
-    { material: "PIR-isolatie", thicknessMm: 160, category: "insulation" },
+    { material: "PIR-isolatie", thicknessMm: 160, category: "insulation", lambda: 0.023 },
     { material: "Bitumen dakbanen", thicknessMm: 8, category: "membrane" },
-    { material: "Ballast (grind)", thicknessMm: 50, category: "finish" },
+    { material: "Ballast (grind)", thicknessMm: 50, category: "finish", lambda: 2.0 },
   ],
 
   ifcEntity: "IfcRoof",

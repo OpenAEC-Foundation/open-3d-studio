@@ -4,6 +4,7 @@ import { getTemplate } from "../catalog/registry";
 import { elementSolids } from "./meshBuilder";
 import { entityMakers, makeCommonProps } from "./ifcEntityMap";
 import { commonPsetFor } from "./psetFactories";
+import { materialThermalProps, thermalPsetProps } from "./thermal";
 
 const { IFC4 } = WebIFC;
 
@@ -383,6 +384,8 @@ export async function exportElementsToIfc(
       storeyName: o3sStorey?.name,
       storeyElevation: o3sStorey?.elevation,
       opening: el.opening ?? null,
+      phase: el.phase ?? "new",
+      hostId: el.hostId ?? null,
     });
     const props = [
       ...Object.entries(template.psetProps(length, el.params)).map(
@@ -395,6 +398,9 @@ export async function exportElementsToIfc(
           ),
       ),
       new IFC4.IfcPropertySingleValue(ident("Merk"), null, label(el.merk ?? ""), null),
+      // Fasering expliciet in de IFC zodat sloop/bestaand herkenbaar blijft
+      // voor ontvangers (renovatieprojecten): "new"/"existing"/"demolished"/"temporary".
+      new IFC4.IfcPropertySingleValue(ident("Fase"), null, label(el.phase ?? "new"), null),
       new IFC4.IfcPropertySingleValue(ident("O3S_Data"), null, text(o3sData), null),
     ];
     const pset = new IFC4.IfcPropertySet(
@@ -478,6 +484,9 @@ export async function exportElementsToIfc(
     }
     return materialCache.get(materialName)!;
   };
+  // v0.5: verzamel alle unieke λ-waarden over alle templates zodat we per IfcMaterial
+  // één Pset_MaterialThermal kunnen aanmaken. Doen we later, na de layer-loop.
+  const materialThermal = new Map<string, number>();
   for (const el of elements) {
     const template = templateByElementId.get(el.id);
     const product = productByElementId.get(el.id);
@@ -511,6 +520,46 @@ export async function exportElementsToIfc(
         null,
         [product],
         usage,
+      ),
+    );
+    // v0.5: λ per materiaal in de layerset registreren voor Pset_MaterialThermal
+    for (const [name, { lambda }] of materialThermalProps(template.materialLayers)) {
+      if (!materialThermal.has(name)) materialThermal.set(name, lambda);
+    }
+    // v0.5: Storax_Thermal (Rc/Rsi/Rse/U) op elk element met een berekende Rc,
+    // plus Pset_WallCommon.ThermalTransmittance (U) waar mogelijk.
+    const thermalProps = thermalPsetProps(template);
+    if (thermalProps) {
+      const props = Object.entries(thermalProps).map(([key, value]) =>
+        new IFC4.IfcPropertySingleValue(
+          ident(key), null,
+          typeof value === "number" ? real(value) : label(String(value)),
+          null,
+        ),
+      );
+      relRoots.push(
+        new IFC4.IfcRelDefinesByProperties(guid(), ownerHistory, null, null, [product],
+          new IFC4.IfcPropertySet(guid(), ownerHistory, label("Storax_Thermal"), null, props),
+        ),
+      );
+    }
+  }
+
+  // -- v0.5: Pset_MaterialThermal op elk IfcMaterial met λ --
+  for (const [materialName, lambda] of materialThermal) {
+    const material = getIfcMaterial(materialName);
+    const props = [
+      new IFC4.IfcPropertySingleValue(
+        ident("ThermalConductivity"), null, real(lambda), null,
+      ),
+      new IFC4.IfcPropertySingleValue(
+        ident("SpecificHeatCapacity"), null, real(1000), null,
+      ),
+    ];
+    api.WriteLine(
+      modelID,
+      new IFC4.IfcMaterialProperties(
+        label("Pset_MaterialThermal"), null, props, material,
       ),
     );
   }

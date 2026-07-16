@@ -21,9 +21,9 @@ export const prefabBetonwand: ComponentTemplate = {
 
   placementKind: "linear",
   materialLayers: [
-    { material: "Beton, prefab (binnenblad)", thicknessMm: 150, category: "structure", loadBearing: true },
-    { material: "PIR-isolatie", thicknessMm: 120, category: "insulation" },
-    { material: "Beton, prefab (buitenblad)", thicknessMm: 80, category: "cladding" },
+    { material: "Beton, prefab (binnenblad)", thicknessMm: 150, category: "structure", loadBearing: true, lambda: 2.3 },
+    { material: "PIR-isolatie", thicknessMm: 120, category: "insulation", lambda: 0.023 },
+    { material: "Beton, prefab (buitenblad)", thicknessMm: 80, category: "cladding", lambda: 2.3 },
   ],
 
   ifcEntity: "IfcWall",

@@ -1,6 +1,6 @@
 [package]
 name = "open-3d-studio"
-version = "0.4.0-rc.1"
+version = "0.6.0"
 description = "Open source 3D-modelleerstudio met IFC als native output"
 authors = ["Open 3D Studio contributors"]
 license = "MIT"

@@ -22,11 +22,11 @@ export const hellendHsbDak: ComponentTemplate = {
   placementKind: "surface",
   materialLayers: [
     { material: "Dampscherm (binnen)", thicknessMm: 1, category: "membrane" },
-    { material: "HSB-sporen 220 mm", thicknessMm: 220, category: "structure", loadBearing: true },
-    { material: "PIR-isolatie", thicknessMm: 140, category: "insulation" },
+    { material: "HSB-sporen 220 mm", thicknessMm: 220, category: "structure", loadBearing: true, lambda: 0.13 },
+    { material: "PIR-isolatie", thicknessMm: 140, category: "insulation", lambda: 0.023 },
     { material: "Onderdakfolie", thicknessMm: 1, category: "membrane" },
-    { material: "Panlatten", thicknessMm: 30, category: "structure" },
-    { material: "Dakpannen (keramisch)", thicknessMm: 22, category: "cladding" },
+    { material: "Panlatten", thicknessMm: 30, category: "structure", lambda: 0.13 },
+    { material: "Dakpannen (keramisch)", thicknessMm: 22, category: "cladding", lambda: 1.0 },
   ],
 
   ifcEntity: "IfcRoof",

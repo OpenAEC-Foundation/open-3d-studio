@@ -22,8 +22,8 @@ export const eticsGevelisolatie: ComponentTemplate = {
 
   placementKind: "linear",
   materialLayers: [
-    { material: "PIR-isolatie", thicknessMm: 120, category: "insulation" },
-    { material: "Minerale afwerkstuc", thicknessMm: 8, category: "finish" },
+    { material: "PIR-isolatie", thicknessMm: 120, category: "insulation", lambda: 0.023 },
+    { material: "Minerale afwerkstuc", thicknessMm: 8, category: "finish", lambda: 0.87 },
   ],
 
   ifcEntity: "IfcCovering",

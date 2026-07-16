@@ -56,6 +56,10 @@ export interface MaterialLayer {
   category?: "structure" | "insulation" | "cladding" | "finish" | "membrane" | "cavity";
   loadBearing?: boolean;
   isVentilated?: boolean;
+  /** Warmtegeleidingscoëfficiënt λ in W/(m·K). Voedt Pset_MaterialThermal en de
+   *  Rc-berekening (v0.5). Verplicht laten wanneer dit een gevel/dak/vloer is
+   *  waar de Bbl-eisen op van toepassing zijn. */
+  lambda?: number;
 }
 
 /** Constructief profiel voor staal/hout (IfcMaterialProfileSetUsage).
@@ -83,7 +87,8 @@ export interface ProfileSpec {
 // ============================================================================
 
 /** IFC-entiteiten die Open 3D Studio kan exporteren.
- *  Uitgebreid in v0.4 t.o.v. de oorspronkelijke {IfcWall, IfcBeam, IfcPlate}. */
+ *  Uitgebreid in v0.4 t.o.v. de oorspronkelijke {IfcWall, IfcBeam, IfcPlate};
+ *  in v0.6 met de MEP-basisset (pipe/duct/cable + terminals). */
 export type IfcEntityName =
   | "IfcWall"
   | "IfcSlab"
@@ -103,7 +108,20 @@ export type IfcEntityName =
   | "IfcSpace"
   | "IfcOpeningElement"
   | "IfcElementAssembly"
-  | "IfcBuildingElementProxy";
+  | "IfcBuildingElementProxy"
+  // v0.6-3: MEP-basisset
+  | "IfcPipeSegment"
+  | "IfcPipeFitting"
+  | "IfcDuctSegment"
+  | "IfcDuctFitting"
+  | "IfcCableSegment"
+  | "IfcCableCarrierSegment"
+  | "IfcAirTerminal"
+  | "IfcSpaceHeater"
+  | "IfcOutlet"
+  | "IfcSanitaryTerminal"
+  | "IfcFlowTerminal"
+  | "IfcLightFixture";
 
 // ============================================================================
 // v0.4-S1: bouwkundige fase (renovatie/nieuwbouw/sloop)
@@ -279,7 +297,33 @@ export interface SheetViewport {
   paper_y_mm?: number;
   paper_w_mm?: number;
   paper_h_mm?: number;
+  /** v0.5-S3: annotaties (maten, callouts) in paper-mm bovenop deze viewport. */
+  annotations?: SheetAnnotation[];
 }
+
+/** Sheet-annotatie: maatlijn of callout-verwijzing (v0.5-S3).
+ *  Paper-coordinaten in mm (absoluut op het blad, oorsprong linksboven); bij
+ *  viewport-drag schuiven ze mee. NB: maten zijn papier-metingen (afstand ×
+ *  schaal) en NIET gekoppeld aan modelgeometrie — bij een modelwijziging
+ *  moeten ze opnieuw geplaatst worden. Associatieve maatvoering volgt in v0.7. */
+export type SheetAnnotation =
+  | {
+      kind: "dimension";
+      /** Twee punten in paper-mm; label wordt automatisch berekend uit de schaal. */
+      a: { x: number; y: number };
+      b: { x: number; y: number };
+      /** Handmatig label (mm). Ontbreekt = auto uit lengte en schaal. */
+      overrideMm?: number;
+    }
+  | {
+      kind: "callout";
+      /** Positie op het papier. */
+      pos: { x: number; y: number };
+      /** Detailnummer dat op het bronblad wordt getoond (bv. "3"). */
+      detailNr: string;
+      /** Sheet-nummer waar het detail te vinden is (bv. "S-05"). */
+      refSheet: string;
+    };
 
 /** Tekeningblad met formaat, oriëntatie en afdrukvensters. */
 export interface Sheet {

@@ -146,34 +146,38 @@ export async function renderSheetPdf(ctx: SheetRenderContext, sheet: Sheet): Pro
     sheet.viewports.forEach((vp: SheetViewport, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
-      const x = margin + col * (cellW + gap);
-      const y = margin + row * (cellH + gap);
+      // v0.5-S3: respecteer paper-coordinaten uit SheetPreview (5 mm snap);
+      // val terug op de auto-grid als paper_* niet is ingevuld.
+      const x = vp.paper_x_mm ?? (margin + col * (cellW + gap));
+      const y = vp.paper_y_mm ?? (margin + row * (cellH + gap));
+      const w = vp.paper_w_mm ?? cellW;
+      const h = vp.paper_h_mm ?? cellH;
 
       // beeldmaat in de wereld: papier-mm × schaal, voor iso: passend (niet op schaal)
       let worldW: number;
       let worldH: number;
       if (vp.view === "iso") {
         const fit = radius * 2.4;
-        worldW = fit * (cellW / cellH);
+        worldW = fit * (w / h);
         worldH = fit;
         if (worldW < fit) {
           worldW = fit;
-          worldH = fit * (cellH / cellW);
+          worldH = fit * (h / w);
         }
       } else {
-        worldW = (cellW / 1000) * vp.scale;
-        worldH = (cellH / 1000) * vp.scale;
+        worldW = (w / 1000) * vp.scale;
+        worldH = (h / 1000) * vp.scale;
       }
 
-      renderer.setSize(mmToPx(cellW), mmToPx(cellH));
+      renderer.setSize(mmToPx(w), mmToPx(h));
       const cam = viewCamera(vp.view, center, worldW, worldH, radius * 3 + 10);
       renderer.render(ctx.scene, cam);
       const png = renderer.domElement.toDataURL("image/png");
 
-      doc.addImage(png, "PNG", x, y, cellW, cellH);
+      doc.addImage(png, "PNG", x, y, w, h);
       doc.setDrawColor(40);
       doc.setLineWidth(0.3);
-      doc.rect(x, y, cellW, cellH);
+      doc.rect(x, y, w, h);
 
       // venster-label
       const label =
@@ -183,8 +187,8 @@ export async function renderSheetPdf(ctx: SheetRenderContext, sheet: Sheet): Pro
       doc.setFontSize(9);
       doc.setTextColor(30);
       doc.setFillColor(255, 255, 255);
-      doc.rect(x + 1.5, y + cellH - 7, Math.max(40, label.length * 1.8), 5.5, "F");
-      doc.text(label, x + 3, y + cellH - 3);
+      doc.rect(x + 1.5, y + h - 7, Math.max(40, label.length * 1.8), 5.5, "F");
+      doc.text(label, x + 3, y + h - 3);
 
       if (vp.view !== "iso") {
         // projectie wereld -> papier (mm) voor vector-annotaties
@@ -192,12 +196,12 @@ export async function renderSheetPdf(ctx: SheetRenderContext, sheet: Sheet): Pro
         const toPaper = (p: THREE.Vector3): [number, number] => {
           const rel = p.clone().sub(center);
           return [
-            x + cellW / 2 + (rel.dot(right) * 1000) / vp.scale,
-            y + cellH / 2 - (rel.dot(up) * 1000) / vp.scale,
+            x + w / 2 + (rel.dot(right) * 1000) / vp.scale,
+            y + h / 2 - (rel.dot(up) * 1000) / vp.scale,
           ];
         };
         const binnen = ([px, py]: [number, number]) =>
-          px > x + 1 && px < x + cellW - 1 && py > y + 1 && py < y + cellH - 1;
+          px > x + 1 && px < x + w - 1 && py > y + 1 && py < y + h - 1;
 
         // maatvoering als vector
         doc.setDrawColor(180, 90, 10);
@@ -220,9 +224,9 @@ export async function renderSheetPdf(ctx: SheetRenderContext, sheet: Sheet): Pro
         // schaalbalk linksonder (1 m-blokken, totaal ~5 m of passend)
         const blokken = 5;
         const blokPapier = 1000 / vp.scale;
-        if (blokPapier * blokken < cellW * 0.5) {
+        if (blokPapier * blokken < w * 0.5) {
           const sx = x + 4;
-          const sy = y + cellH - 11;
+          const sy = y + h - 11;
           doc.setLineWidth(0.2);
           doc.setDrawColor(30);
           for (let bIdx = 0; bIdx < blokken; bIdx++) {
@@ -238,7 +242,7 @@ export async function renderSheetPdf(ctx: SheetRenderContext, sheet: Sheet): Pro
 
         // noordpijl (alleen bovenaanzicht; boven = noorden)
         if (vp.view === "top") {
-          const nx = x + cellW - 8;
+          const nx = x + w - 8;
           const ny = y + 10;
           doc.setDrawColor(30);
           doc.setFillColor(30, 30, 30);
@@ -247,6 +251,46 @@ export async function renderSheetPdf(ctx: SheetRenderContext, sheet: Sheet): Pro
           doc.setFontSize(8);
           doc.setTextColor(30);
           doc.text("N", nx, ny + 6.5, { align: "center" });
+        }
+      }
+
+      // v0.5-S3: sheet-annotaties (paper-mm coordinaten binnen deze viewport)
+      for (const ann of vp.annotations ?? []) {
+        if (ann.kind === "dimension") {
+          const paperLen = Math.hypot(ann.b.x - ann.a.x, ann.b.y - ann.a.y);
+          const worldMm = ann.overrideMm ?? Math.round(paperLen * vp.scale);
+          doc.setDrawColor(30);
+          doc.setLineWidth(0.25);
+          doc.line(ann.a.x, ann.a.y, ann.b.x, ann.b.y);
+          const angle = Math.atan2(ann.b.y - ann.a.y, ann.b.x - ann.a.x);
+          const tickAngle = angle + Math.PI / 2;
+          const tickLen = 1.5;
+          doc.line(
+            ann.a.x, ann.a.y,
+            ann.a.x + Math.cos(tickAngle) * tickLen,
+            ann.a.y + Math.sin(tickAngle) * tickLen,
+          );
+          doc.line(
+            ann.b.x, ann.b.y,
+            ann.b.x + Math.cos(tickAngle) * tickLen,
+            ann.b.y + Math.sin(tickAngle) * tickLen,
+          );
+          doc.setFontSize(7);
+          doc.setTextColor(20);
+          const mx = (ann.a.x + ann.b.x) / 2;
+          const my = (ann.a.y + ann.b.y) / 2 - 1.2;
+          doc.text(`${worldMm} mm`, mx, my, { align: "center", angle: (angle * 180) / Math.PI });
+        } else if (ann.kind === "callout") {
+          doc.setDrawColor(217, 119, 6);
+          doc.setFillColor(254, 243, 199);
+          doc.setLineWidth(0.35);
+          doc.circle(ann.pos.x, ann.pos.y, 4, "FD");
+          doc.line(ann.pos.x - 4, ann.pos.y, ann.pos.x + 4, ann.pos.y);
+          doc.setFontSize(8);
+          doc.setTextColor(124, 45, 18);
+          doc.text(ann.detailNr, ann.pos.x, ann.pos.y - 0.5, { align: "center" });
+          doc.setFontSize(6);
+          doc.text(ann.refSheet, ann.pos.x, ann.pos.y + 2.5, { align: "center" });
         }
       }
     });

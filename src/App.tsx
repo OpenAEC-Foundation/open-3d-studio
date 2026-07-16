@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Studio, type ToolName, type ViewName } from "./core/studio";
-import { getTemplate, templates } from "./catalog/registry";
-import type { GridConfig, LoadedModelInfo, ParamValues, PlacedElement, Sheet, Storey } from "./core/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DEFAULT_PHASE_SETTINGS, Studio, type PhaseSettings, type ToolName, type ViewName } from "./core/studio";
+import { allTemplates, getTemplate, subscribeRuntimeTemplates } from "./catalog/registry";
+import type { ElementPhase, GridConfig, LoadedModelInfo, ParamValues, PlacedElement, Sheet, Storey } from "./core/types";
 import { openFilesDialog, saveFileAs } from "./core/fileio";
+import { listPresets } from "./core/ilsCheck";
+import { EXAMPLE_PLUGIN_JS } from "./core/pluginApi";
 import { ParamsPanel } from "./ui/ParamsPanel";
 import { Ribbon, type RibbonTab } from "./ui/Ribbon";
 import { SheetPreview } from "./ui/SheetPreview";
+import { TemplateEditor } from "./ui/TemplateEditor";
 import { makeT, type Lang } from "./ui/i18n";
 
 interface QtyRow {
@@ -20,7 +23,15 @@ interface QtyRow {
 function buildQuantities(elements: PlacedElement[]): QtyRow[] {
   const map = new Map<string, QtyRow>();
   for (const el of elements) {
-    const t = getTemplate(el.templateId);
+    // Sloop-elementen horen niet in de bestellijst; onbekende templates
+    // (verdwenen runtime-template) niet laten crashen maar overslaan.
+    if ((el.phase ?? "new") === "demolished") continue;
+    let t;
+    try {
+      t = getTemplate(el.templateId);
+    } catch {
+      continue;
+    }
     const lengteMm = Math.round(
       Math.hypot(el.end.x - el.start.x, el.end.z - el.start.z) * 1000,
     );
@@ -40,6 +51,17 @@ function buildQuantities(elements: PlacedElement[]): QtyRow[] {
 }
 
 const VIEW_IDS: ViewName[] = ["iso", "top", "front", "back", "left", "right"];
+
+const PHASE_LABELS: Record<ElementPhase, string> = {
+  new: "Nieuwbouw",
+  existing: "Bestaand",
+  demolished: "Te slopen",
+  temporary: "Tijdelijk",
+};
+
+function idsPresetTitle(id: string): string {
+  return listPresets().find((p) => p.id === id)?.title ?? "IDS";
+}
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -80,6 +102,12 @@ export default function App() {
     { eis: string; status: "ok" | "let-op" | "fout"; toelichting: string }[] | null
   >(null);
   const [geoRef, setGeoRef] = useState({ enabled: false, rdX: 0, rdY: 0, napZ: 0 });
+  const [idsPreset, setIdsPreset] = useState<string>("bim-basis-ils-2");
+  const [phaseSettings, setPhaseSettings] = useState<PhaseSettings>(() => JSON.parse(JSON.stringify(DEFAULT_PHASE_SETTINGS)));
+  const [templatesRev, setTemplatesRev] = useState(0);
+  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
+  const [speckleCfg, setSpeckleCfg] = useState({ host: "https://speckle.xyz", token: "", streamId: "", branchName: "main" });
+  const [pluginSrc, setPluginSrc] = useState(EXAMPLE_PLUGIN_JS);
   const [aiKey, setAiKey] = useState(() => localStorage.getItem("o3s-apikey") ?? "");
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -117,6 +145,7 @@ export default function App() {
       onOriginChanged: (o) =>
         setOrigin({ x: Math.round(o.x * 1000), y: Math.round(o.y * 1000), z: Math.round(o.z * 1000) }),
       onGeoRefChanged: setGeoRef,
+      onPhaseSettingsChanged: setPhaseSettings,
       onStoreysChanged: (s, activeId) => {
         setStoreys(s);
         setActiveStoreyId(activeId);
@@ -147,14 +176,46 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    // Re-render zodra runtime-templates (via .o3st, IFC-family of plugin) veranderen.
+    return subscribeRuntimeTemplates(() => setTemplatesRev((r) => r + 1));
+  }, []);
+
+  useEffect(() => {
+    // Nieuwe runtime-templates brengen nieuwe lagen-categorieën mee.
+    const s = studioRef.current;
+    if (s) setLayers(s.getLayers());
+  }, [templatesRev]);
+
+  useEffect(() => {
     localStorage.setItem("o3s-lang", lang);
   }, [lang]);
 
   const studio = () => studioRef.current;
-  const template = getTemplate(templateId);
+  const templates = useMemo(() => allTemplates(), [templatesRev]);
+  // Guard: het actieve template kan een runtime-template zijn dat net is
+  // ge-unregistreerd (plugin/editor) — zonder vangnet white-screent de render.
+  const template = useMemo(() => {
+    try {
+      return getTemplate(templateId);
+    } catch {
+      return templates[0];
+    }
+  }, [templateId, templates]);
+  useEffect(() => {
+    // Als het actieve template uit de catalogus verdween: netjes terugvallen,
+    // ook in de engine (anders gooit de teken-preview op het oude id).
+    if (!templates.some((tm) => tm.id === templateId) && templates.length > 0) {
+      setTemplateId(templates[0].id);
+      setParams({ ...templates[0].defaults });
+      studioRef.current?.setActiveTemplate(templates[0].id);
+    }
+  }, [templates, templateId]);
   const selected = elements.find((e) => e.id === selectedId) ?? null;
   const quantities = useMemo(() => buildQuantities(elements), [elements]);
   const activeSheet = sheets.find((s) => s.id === activeSheetId) ?? null;
+  // Stabiele identiteit: anders herstart het snapshot-effect in SheetPreview
+  // (GPU-readback + PNG-encode) bij elke onverwante App-render.
+  const captureSnapshot = useCallback(() => studioRef.current?.captureViewportPng() ?? null, []);
 
   const activateTool = (toolName: ToolName) => {
     setTool(toolName);
@@ -354,8 +415,21 @@ export default function App() {
             {
               id: "ils",
               icon: "✓",
-              label: t("btnIls"),
-              onClick: async () => setIlsReport((await studio()?.runIlsCheck()) ?? null),
+              label: `IDS: ${idsPresetTitle(idsPreset)}`,
+              title: "Draai de gekozen IDS-preset (kies onder in het IDS-paneel).",
+              onClick: async () => setIlsReport((await studio()?.runIdsPreset(idsPreset)) ?? null),
+            },
+            {
+              id: "idsFile",
+              icon: "◈",
+              label: "IDS uit bestand",
+              onClick: async () => {
+                const files = await openFilesDialog(
+                  [{ name: "IDS", extensions: ["ids", "xml"] }],
+                  false,
+                );
+                if (files.length) setIlsReport((await studio()?.runIdsFile(files[0])) ?? null);
+              },
             },
             {
               id: "bcf",
@@ -374,6 +448,20 @@ export default function App() {
                 );
                 if (files.length) await studio()?.importBcf(files[0]);
               },
+            },
+            {
+              id: "struct",
+              icon: "▲",
+              label: "Structural aspect",
+              title: "Exporteer de dragende elementen als IfcStructuralAnalysisModel (Scia/RFEM).",
+              onClick: () => studio()?.exportStructural(),
+            },
+            {
+              id: "cobie",
+              icon: "▨",
+              label: "COBie ZIP",
+              title: "COBie 2.4 CSV-tabbladen (Facility/Floor/Type/Component/System) in één ZIP.",
+              onClick: () => studio()?.exportCobie(),
             },
           ],
         },
@@ -434,6 +522,98 @@ export default function App() {
           items: [
             { id: "section", icon: "◪", label: t("btnSection"), active: tool === "section", onClick: () => activateTool("section") },
             { id: "sectionoff", icon: "✕", label: t("btnSectionOff"), onClick: () => studio()?.clearSection() },
+          ],
+        },
+      ],
+    },
+    {
+      id: "ecosystem",
+      label: "Ecosysteem",
+      groups: [
+        {
+          title: "Templates",
+          items: [
+            {
+              id: "openEditor",
+              icon: "⧉",
+              label: "Template-editor",
+              title: ".o3st bewerken of nieuwe maken",
+              onClick: () => setShowTemplateEditor(true),
+            },
+            {
+              id: "loadO3st",
+              icon: "⇢",
+              label: "Laad .o3st",
+              onClick: async () => {
+                const files = await openFilesDialog([{ name: "Open 3D Studio-template", extensions: ["o3st"] }], false);
+                if (!files.length) return;
+                try {
+                  const { loadO3stTemplate } = await import("./catalog/registry");
+                  const json = JSON.parse(await files[0].text());
+                  loadO3stTemplate(json);
+                  setStatus(`Template "${json.name}" toegevoegd aan catalogus.`);
+                } catch (err) {
+                  setStatus(`Kon .o3st niet laden: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              },
+            },
+          ],
+        },
+        {
+          title: "Bibliotheken",
+          items: [
+            {
+              id: "loadFamily",
+              icon: "◧",
+              label: "IFC-family",
+              title: "IFC-bibliotheek van een fabrikant importeren als plaatsbare proxies",
+              onClick: async () => {
+                const files = await openFilesDialog([{ name: "IFC-family", extensions: ["ifc"] }], false);
+                if (files.length) await studio()?.importIfcFamily(files[0]);
+              },
+            },
+          ],
+        },
+        {
+          title: "Constructie",
+          items: [
+            {
+              id: "rebar",
+              icon: "▤",
+              label: "Wapening-BOM",
+              title: "IfcReinforcingBar/Mesh: BOM als CSV",
+              onClick: () => studio()?.exportRebarBom(),
+            },
+          ],
+        },
+        {
+          title: "Doorsnede",
+          items: [
+            {
+              id: "sectionSvg",
+              icon: "◪",
+              label: "Doorsnede-SVG",
+              title: "Hatch per materiaal, schaal 1:50",
+              onClick: () => studio()?.exportSectionSvg({ normal: "x", offset: 0 }, 50),
+            },
+          ],
+        },
+        {
+          title: "Cloud",
+          items: [
+            {
+              id: "speckle",
+              icon: "☁",
+              label: "Push Speckle",
+              title: "Model naar Speckle-stream (config in het paneel)",
+              onClick: async () => {
+                if (!speckleCfg.token || !speckleCfg.streamId) {
+                  setStatus("Vul eerst token + streamId in bij Speckle-paneel.");
+                  return;
+                }
+                await studio()?.pushSpeckle(speckleCfg);
+              },
+            },
           ],
         },
       ],
@@ -812,6 +992,99 @@ export default function App() {
           </section>
 
           <section>
+            <h2>IDS-controle</h2>
+            <label className="param-row">
+              <span>Ruleset</span>
+              <select value={idsPreset} onChange={(e) => setIdsPreset(e.target.value)}>
+                {listPresets().map((p) => (
+                  <option key={p.id} value={p.id}>{p.title}</option>
+                ))}
+              </select>
+            </label>
+            <div className="btn-row">
+              <button
+                className="mini accent"
+                onClick={async () => setIlsReport((await studio()?.runIdsPreset(idsPreset)) ?? null)}
+              >
+                Controleren
+              </button>
+              <button
+                className="mini"
+                onClick={async () => {
+                  const files = await openFilesDialog([{ name: "IDS", extensions: ["ids", "xml"] }], false);
+                  if (files.length) setIlsReport((await studio()?.runIdsFile(files[0])) ?? null);
+                }}
+              >
+                IDS-bestand …
+              </button>
+            </div>
+            <p className="muted">
+              Kies BIM basis ILS 2.0, Bbl Rc-controle, of één van de ILS O&amp;E-templates
+              (SO/VO/DO/TO/UO). Eigen IDS-bestanden mogen ook — bijvoorbeeld direct uit
+              de BIM Loket IDS Configurator.
+            </p>
+          </section>
+
+          <section>
+            <h2>Fasering</h2>
+            <p className="muted">Filter en styling per bouwkundige fase.</p>
+            <table className="phase-table">
+              <thead>
+                <tr>
+                  <th>Fase</th>
+                  <th>Zicht</th>
+                  <th>Kleur</th>
+                  <th>Streep</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(Object.keys(PHASE_LABELS) as ElementPhase[]).map((ph) => (
+                  <tr key={ph}>
+                    <td>{PHASE_LABELS[ph]}</td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={phaseSettings.visible[ph]}
+                        onChange={(e) =>
+                          studio()?.setPhaseSettings({
+                            visible: { ...phaseSettings.visible, [ph]: e.target.checked },
+                          })
+                        }
+                      />
+                    </td>
+                    <td>
+                      {ph === "new" ? (
+                        <span className="muted" title="Nieuwbouw gebruikt de template-kleur">–</span>
+                      ) : (
+                        <input
+                          type="color"
+                          value={phaseSettings.color[ph] || "#7f7a70"}
+                          onChange={(e) =>
+                            studio()?.setPhaseSettings({
+                              color: { ...phaseSettings.color, [ph]: e.target.value },
+                            })
+                          }
+                        />
+                      )}
+                    </td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={phaseSettings.wireframe[ph]}
+                        onChange={(e) =>
+                          studio()?.setPhaseSettings({
+                            wireframe: { ...phaseSettings.wireframe, [ph]: e.target.checked },
+                          })
+                        }
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+
+          <section>
             <h2>{t("panLayers")}</h2>
             <ul className="list">
               {layers.map((l) => (
@@ -932,7 +1205,7 @@ export default function App() {
                 <SheetPreview
                   sheet={activeSheet}
                   onViewportsChange={(vps) => updateSheet(activeSheet.id, { viewports: vps })}
-                  captureSnapshot={() => studio()?.captureViewportPng() ?? null}
+                  captureSnapshot={captureSnapshot}
                 />
                 <p className="muted">{t("viewportsHint")}</p>
                 {activeSheet.viewports.map((vp, i) => (
@@ -1048,6 +1321,67 @@ export default function App() {
             )}
           </section>
           <section>
+            <h2>Speckle</h2>
+            <label className="param-row"><span>Host</span>
+              <input value={speckleCfg.host} onChange={(e) => setSpeckleCfg({ ...speckleCfg, host: e.target.value })} />
+            </label>
+            <label className="param-row"><span>Stream ID</span>
+              <input value={speckleCfg.streamId} onChange={(e) => setSpeckleCfg({ ...speckleCfg, streamId: e.target.value })} />
+            </label>
+            <label className="param-row"><span>Branch</span>
+              <input value={speckleCfg.branchName} onChange={(e) => setSpeckleCfg({ ...speckleCfg, branchName: e.target.value })} />
+            </label>
+            <label className="param-row"><span>Token</span>
+              <input type="password" value={speckleCfg.token} onChange={(e) => setSpeckleCfg({ ...speckleCfg, token: e.target.value })} />
+            </label>
+            <div className="btn-row">
+              <button
+                className="mini accent"
+                disabled={!speckleCfg.token || !speckleCfg.streamId}
+                onClick={() => studio()?.pushSpeckle(speckleCfg)}
+              >
+                Push commit
+              </button>
+            </div>
+            <p className="muted">
+              Push naar Speckle 2.x. Vraag een personal access token in je account-instellingen.
+            </p>
+          </section>
+
+          <section>
+            <h2>Plugin</h2>
+            <textarea
+              className="ai-prompt"
+              rows={8}
+              value={pluginSrc}
+              onChange={(e) => setPluginSrc(e.target.value)}
+              placeholder="plugin((api) => { … })"
+              spellCheck={false}
+            />
+            <div className="btn-row">
+              <button className="mini accent" onClick={() => studio()?.runPlugin(pluginSrc)}>
+                Draai plugin
+              </button>
+              <button
+                className="mini"
+                onClick={async () => {
+                  const files = await openFilesDialog([{ name: "Open 3D Studio-plugin", extensions: ["o3sp", "js"] }], false);
+                  if (!files.length) return;
+                  const src = await files[0].text();
+                  setPluginSrc(src);
+                  await studio()?.runPlugin(src);
+                }}
+              >
+                Laad .o3sp …
+              </button>
+            </div>
+            <p className="muted">
+              ⚠ Plugins draaien met vólledige toegang (geen sandbox; netwerk en
+              opslag bereikbaar). Laad uitsluitend code die je vertrouwt en hebt gelezen.
+            </p>
+          </section>
+
+          <section>
             <h2>{t("panAssistant")}</h2>
             <label className="param-row">
               <span>{t("aiKeyLabel")}</span>
@@ -1078,6 +1412,13 @@ export default function App() {
           </section>
         </aside>
       </div>
+
+      {showTemplateEditor && (
+        <TemplateEditor
+          onClose={() => setShowTemplateEditor(false)}
+          onSaved={() => setTemplatesRev((r) => r + 1)}
+        />
+      )}
 
       {ilsReport && (
         <div className="modal-overlay" onClick={() => setIlsReport(null)}>

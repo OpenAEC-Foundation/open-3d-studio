@@ -229,6 +229,120 @@ export function entityMakers(
         needsEnvelope: false,
       };
     }
+    // v0.6-3: MEP-basisset. Alle MEP-entiteiten volgen hetzelfde patroon:
+    // product krijgt PredefinedType, type krijgt hetzelfde. De Pset-namen
+    // volgen buildingSMART-conventies (Pset_<Entity>Common).
+    case "IfcPipeSegment": {
+      const preEnum = () => resolveEnum(IFC4.IfcPipeSegmentTypeEnum, preName, "RIGIDSEGMENT");
+      return {
+        product: (c) => ctor(IFC4.IfcPipeSegment, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcPipeSegmentType, [...a, preEnum()]),
+        psetName: "Pset_PipeSegmentTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcPipeFitting": {
+      const preEnum = () => resolveEnum(IFC4.IfcPipeFittingTypeEnum, preName, "BEND");
+      return {
+        product: (c) => ctor(IFC4.IfcPipeFitting, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcPipeFittingType, [...a, preEnum()]),
+        psetName: "Pset_PipeFittingTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcDuctSegment": {
+      const preEnum = () => resolveEnum(IFC4.IfcDuctSegmentTypeEnum, preName, "RIGIDSEGMENT");
+      return {
+        product: (c) => ctor(IFC4.IfcDuctSegment, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcDuctSegmentType, [...a, preEnum()]),
+        psetName: "Pset_DuctSegmentTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcDuctFitting": {
+      const preEnum = () => resolveEnum(IFC4.IfcDuctFittingTypeEnum, preName, "BEND");
+      return {
+        product: (c) => ctor(IFC4.IfcDuctFitting, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcDuctFittingType, [...a, preEnum()]),
+        psetName: "Pset_DuctFittingTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcCableSegment": {
+      const preEnum = () => resolveEnum(IFC4.IfcCableSegmentTypeEnum, preName, "CABLESEGMENT");
+      return {
+        product: (c) => ctor(IFC4.IfcCableSegment, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcCableSegmentType, [...a, preEnum()]),
+        psetName: "Pset_CableSegmentTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcCableCarrierSegment": {
+      const preEnum = () => resolveEnum(IFC4.IfcCableCarrierSegmentTypeEnum, preName, "CABLELADDERSEGMENT");
+      return {
+        product: (c) => ctor(IFC4.IfcCableCarrierSegment, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcCableCarrierSegmentType, [...a, preEnum()]),
+        psetName: "Pset_CableCarrierSegmentTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcAirTerminal": {
+      const preEnum = () => resolveEnum(IFC4.IfcAirTerminalTypeEnum, preName, "DIFFUSER");
+      return {
+        product: (c) => ctor(IFC4.IfcAirTerminal, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcAirTerminalType, [...a, preEnum()]),
+        psetName: "Pset_AirTerminalTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcSpaceHeater": {
+      const preEnum = () => resolveEnum(IFC4.IfcSpaceHeaterTypeEnum, preName, "RADIATOR");
+      return {
+        product: (c) => ctor(IFC4.IfcSpaceHeater, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcSpaceHeaterType, [...a, preEnum()]),
+        psetName: "Pset_SpaceHeaterTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcOutlet": {
+      const preEnum = () => resolveEnum(IFC4.IfcOutletTypeEnum, preName, "AUDIOVISUALOUTLET");
+      return {
+        product: (c) => ctor(IFC4.IfcOutlet, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcOutletType, [...a, preEnum()]),
+        psetName: "Pset_OutletTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcSanitaryTerminal": {
+      const preEnum = () => resolveEnum(IFC4.IfcSanitaryTerminalTypeEnum, preName, "WASHHANDBASIN");
+      return {
+        product: (c) => ctor(IFC4.IfcSanitaryTerminal, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcSanitaryTerminalType, [...a, preEnum()]),
+        psetName: "Pset_SanitaryTerminalTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcFlowTerminal": {
+      // IfcFlowTerminal is een supertype (abstract in IFC4); voor Open 3D Studio
+      // gebruiken we het bewust voor "generieke terminals" die niet in een van
+      // de sub-classes vallen. Serialiseren als IfcBuildingElementProxy.
+      const preEnum = () => resolveEnum(IFC4.IfcBuildingElementProxyTypeEnum, undefined, "ELEMENT");
+      return {
+        product: (c) => ctor(IFC4.IfcBuildingElementProxy, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcBuildingElementProxyType, [...a, preEnum()]),
+        psetName: "Pset_FlowTerminalTypeCommon",
+        needsEnvelope: false,
+      };
+    }
+    case "IfcLightFixture": {
+      const preEnum = () => resolveEnum(IFC4.IfcLightFixtureTypeEnum, preName, "DIRECTIONSOURCE");
+      return {
+        product: (c) => ctor(IFC4.IfcLightFixture, [...c, preEnum()]),
+        type: (a) => ctor(IFC4.IfcLightFixtureType, [...a, preEnum()]),
+        psetName: "Pset_LightFixtureTypeCommon",
+        needsEnvelope: false,
+      };
+    }
     default: {
       // Fallback: onbekende entiteit → als BuildingElementProxy exporteren.
       const preEnum = () =>

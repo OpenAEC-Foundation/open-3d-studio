@@ -23,11 +23,11 @@ export const hsbBuitenwand: ComponentTemplate = {
 
   placementKind: "linear",
   materialLayers: [
-    { material: "Gipsvezelplaat", thicknessMm: 15, category: "finish" },
-    { material: "Hout, gelamineerd stijl+regel", thicknessMm: 145, category: "structure", loadBearing: true },
-    { material: "Minerale wol", thicknessMm: 145, category: "insulation" },
-    { material: "OSB windvast", thicknessMm: 12, category: "structure" },
-    { material: "Houten gevelbekleding", thicknessMm: 22, category: "cladding" },
+    { material: "Gipsvezelplaat", thicknessMm: 15, category: "finish", lambda: 0.32 },
+    { material: "Hout, gelamineerd stijl+regel", thicknessMm: 145, category: "structure", loadBearing: true, lambda: 0.13 },
+    { material: "Minerale wol", thicknessMm: 145, category: "insulation", lambda: 0.035 },
+    { material: "OSB windvast", thicknessMm: 12, category: "structure", lambda: 0.13 },
+    { material: "Houten gevelbekleding", thicknessMm: 22, category: "cladding", lambda: 0.13 },
   ],
 
   ifcEntity: "IfcWall",

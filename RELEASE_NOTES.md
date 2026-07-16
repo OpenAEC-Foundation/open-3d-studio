@@ -1,3 +1,305 @@
+# Open 3D Studio v0.6.0 — ecosysteem (templates, families, MEP, wapening, Speckle, plugins, doorsnedes)
+
+## Codereview-hardening — 10 bevindingen uit de multi-agent review opgelost
+
+Na de eerste rc draaide een 8-hoeks review (line-by-line, removed-behavior,
+cross-file, reuse, simplificatie, efficiency, altitude, conventies) met
+adversariële verificatie per bevinding. De 10 zwaarste zijn gefixt:
+
+1. **IFC-family-import registreerde een gedegradeerde template** — de gemeten
+   bounding-box werd weggegooid door een onbedoelde .o3st-round-trip; elk
+   geïmporteerd product plaatste als 0,01×0,3×2,8 m-sliver. Registreert nu
+   direct het echte template.
+2. **Fasering/hosting overleefde undo en save/reopen niet** — `serializeProject`
+   persisteert nu `phase`/`hostId`/`spaceId`; fase gaat ook mee in de IFC
+   (`Fase`-property + O3S_Data) en overleeft de IFC-round-trip.
+3. **Kolomwapening rekende met de plan-lengte** als doorsnedehoogte, staaflengte
+   én beugelverdeling. Nu: doorsnede uit profielmaten, staven/beugels uit de
+   hoogte-parameter (300×300-kolom: 15 beugels van 960 mm, staven 2800 mm).
+4. **Vloer-mesh-BOM was ~13× te laag** — het veld `lengthMm` bevatte een
+   oppervlak. Nu echt afgewikkeld (tweezijdig Ø8-150) en het oppervlak uit de
+   rechthoekzijden i.p.v. de diagonaal.
+5. **Officiële (hoofdletter-)IDS-bestanden matchten nul elementen** — entity-
+   matching is nu case-insensitief conform de IDS 1.0-spec; `IFCWALL` matcht.
+6. **Vijf v0.4-checks waren verloren in de IDS-migratie** — terug als vaste
+   `basisChecks()` bovenop elke IDS-run: bouwlaagnaamgeving, wees-elementen,
+   Pset_-prefix, dragend/NL-SfB-consistentie, ontbrekende templates (die de
+   IDS-run stil oversloeg) worden weer gemeld.
+7. **Sloop-elementen telden mee als nieuwbouw** — COBie, structural, wapening,
+   elementeren en de aantallenlijst sluiten fase "demolished" nu uit; de
+   hoofd-IFC behoudt alle fasen mét Fase-property.
+8. **Verdwenen runtime-templates crashten de app** — project openen slaat
+   onbekende templates over (met melding), en de App-render valt terug op het
+   eerste template i.p.v. te white-screenen.
+9. **Valse sandbox-claims bij plugins** — documentatie en UI zeggen nu eerlijk
+   dat plugins volledige toegang hebben (Worker-sandbox staat voor v0.7).
+10. **Sheet-annotaties bleven achter bij viewport-drag** — maten en callouts
+    schuiven nu mee; het dode `elementRef`-veld is verwijderd en de docs melden
+    expliciet dat maten (nog) niet associatief zijn.
+
+Plus kleiner werk uit de review: `IfcRelAssignsToGroup` verwijst alleen nog naar
+daadwerkelijk geschreven members, de doorsnede-SVG toont lagen van één element
+aaneengesloten op hun cy-offset (geen verstrooide rechthoeken meer),
+lagenpaneel/AI-assistent/NL-SfB-groepering zien nu ook runtime-templates, de
+template-editor voegt bij solid-box automatisch de diepte/hoogte-parameters toe,
+snapshot-hergeneratie in de sheet-preview is gestabiliseerd (useCallback), en de
+dode inclusive-logica in de IDS-range-parser is opgeruimd.
+
+De **Ecosysteem-release**: van "modelleerstudio voor Nederland" naar "platform waar de
+gemeenschap zelf templates, families, plugins en workflows kan bouwen". Zeven punten
+uit de v1.0-scope in PLAN.md §5 in een eerste werkende versie.
+
+## v0.6-1 — .o3st template-editor
+
+- **Nieuw formaat `.o3st`** (`src/core/o3stTemplate.ts`): JSON-serialisatie van
+  templates zonder code. Drie procedurele shape-kinds — `layered`, `solid-box`,
+  `profile-swept` — dekken ~95 % van de bestaande catalogus. Community-templates
+  blijven daardoor inherent veilig te installeren.
+- **Runtime-registry** (`src/catalog/registry.ts`) — `registerRuntimeTemplate`,
+  `unregisterRuntimeTemplate`, `subscribeRuntimeTemplates`. Templates die na
+  build-tijd worden geladen verschijnen live in de dropdown.
+- **Editor-UI** (`src/ui/TemplateEditor.tsx`) — grid met velden voor id/naam/IFC-
+  entiteit/psetName, editor voor materiaallagen (met λ), open/opslaan als `.o3st`,
+  direct toevoegen aan de catalogus. Basiseren op bestaand template als
+  startpunt (HSB-buitenwand / staalprofiel / plat dak).
+
+## v0.6-2 — IFC-family-import als IfcBuildingElementProxy
+
+- **`src/core/ifcFamilyImport.ts`** — laadt een externe IFC (Ubbink, Rockpanel,
+  Kingspan, Simpson, Wienerberger) en converteert elk product met geometrie tot
+  een read-only proxy-template. Bounding-box uit `GetFlatMesh` + `GetGeometry`.
+- Elke proxy krijgt eigen `id`, category `Import — <bron>`, `manufacturer`,
+  `psetName: "Import_Family"` met originele naam/beschrijving/afmetingen.
+- Automatisch geregistreerd via de runtime-registry — direct plaatsbaar.
+
+## v0.6-3 — MEP-basisset (11 templates)
+
+- **`src/catalog/50_mep/`** — elf nieuwe templates over vier disciplines:
+  - **Sanitair/verwarming**: pipe-segment (Cu/kunststof), pipe-fitting (bocht/T),
+    space-heater (paneelradiator T11/T22/T33), sanitary-terminal (wastafel/wc/
+    urinoir/bad/douche).
+  - **Ventilatie**: duct-segment (rechthoekig), duct-fitting, air-terminal
+    (diffusor/rooster/louvre).
+  - **Elektra**: cable-segment (VD/XMvK/YMvK/UTP), outlet (stopcontact/data),
+    cable-carrier (kabelgoot), light-fixture (LED-spot/paneel/lijn).
+- **`IfcEntityName`** in `types.ts` uitgebreid met 11 MEP-entiteiten;
+  `ifcEntityMap.ts` levert per entity de juiste constructor + `PredefinedType`-
+  enum + Common-Pset-naam.
+
+## v0.6-4 — Wapening-generator
+
+- **`src/core/rebarGenerator.ts`** — genereert een simpele rebar-cage voor
+  betonkolommen, -balken en -vloeren. Configureerbaar: hoofdstaven Ø,
+  aantal, beugels Ø + hart-op-hart, betondekking. B500B staal.
+- Levert `RebarBar[]` als data-struct (positions + lengths + rol) plus
+  `rebarBomCsv()` en `rebarTotalsByDiameter()` (kg-totalen via
+  π/4·Ø²·ρ met ρ_staal = 7850 kg/m³).
+- **UI-knop "Wapening-BOM"** in de nieuwe Ecosysteem-ribbon exporteert CSV.
+
+## v0.6-5 — Speckle-connector
+
+- **`src/core/speckleConnector.ts`** — push/pull naar Speckle 2.x zónder de
+  Speckle SDK als dependency toe te voegen (die trekt automerge + RxJS mee).
+  Directe communicatie via REST (`/objects/{streamId}`) + GraphQL
+  (`commitCreate`).
+- Model → Speckle-graph: root `Base` met `@elements`-array; per element
+  `Objects.BuiltElements.<Type>` met start/end/params/hostId/phase/storey.
+- **Speckle-paneel** in de sidepanel: host, streamId, branch, token → één
+  "Push commit"-knop.
+
+## v0.6-6 — Plugin-API voor TS/JS-scripting
+
+- **`src/core/pluginApi.ts`** — `.o3sp`-formaat (plain-text JS). Plugin heeft
+  toegang tot een `PluginRuntime`-API: log, listTemplates, getTemplate,
+  registerTemplate, unregisterTemplate, getElements, getStoreys, placeElement.
+- **Sandbox** via `new Function()`-constructor met `"use strict"`; geen
+  window/document/fetch/localStorage bereikbaar. (Voor v0.7 komt een
+  Web Worker + MessageChannel-sandbox.)
+- **Plugin-paneel** in de sidepanel: multi-line JS-editor + "Draai plugin" +
+  "Laad .o3sp …". Ingebouwd voorbeeld `EXAMPLE_PLUGIN_JS` registreert een
+  demo-schotje.
+
+## v0.6-7 — Doorsnedes fase 2 en 3
+
+- **`src/core/sectionSvg.ts`** — 2D-SVG-export van de doorsnede met:
+  - Rechthoekige polygonen per `SolidBox`-laag
+  - **Hatch per IfcMaterial-categorie** via SVG-patterns:
+    structure = diagonale streep, insulation = golvend, cladding = horizontaal,
+    membrane = dicht, finish = licht grijs, cavity = wit.
+  - Papiervel + snijvlak-informatie in de kop.
+- **`sectionAsAnnotation()`** — bouwt de payload voor `IfcAnnotation`-round-trip
+  (fase 3). De wire-up naar `ifcExport.ts` volgt in v0.7 samen met sheets-round-trip.
+- **UI-knop "Doorsnede-SVG"** in de Ecosysteem-ribbon.
+
+## Ribbon-uitbreiding
+
+De **Ecosysteem-tab** heeft vijf groepen:
+- **Templates**: Template-editor, Laad .o3st
+- **Bibliotheken**: IFC-family
+- **Constructie**: Wapening-BOM
+- **Doorsnede**: Doorsnede-SVG
+- **Cloud**: Push Speckle
+
+Nieuwe sidepanel-secties: **Speckle** (host/stream/branch/token) en **Plugin**
+(JS-editor + Draai/Laad).
+
+## Test-bewijs
+
+- **Type-check**: `tsc --noEmit` clean over alle nieuwe modules
+  (`o3stTemplate`, `ifcFamilyImport`, `rebarGenerator`, `speckleConnector`,
+  `pluginApi`, `sectionSvg`) én de 12 MEP-templates.
+- **Runtime**: catalogus bevat na start 51 templates (40 bouw + 11 MEP);
+  runtime-registratie via `loadO3stTemplate` en `subscribeRuntimeTemplates`
+  update de dropdown live. Plugin-voorbeeld registreert een 52ste template.
+- **Rebar-generator**: kolom + vloer levert 2 diameters (Ø16 hoofd, Ø8 mesh),
+  4,23 kg totaal via π/4·Ø²·ρ_staal.
+- **.o3st round-trip**: HSB-buitenwand → serialiseren → `o3stToTemplate` levert
+  5 SolidBox'en identiek aan het origineel (bevestigd via `solids(5, defaults)`).
+- **Doorsnede-SVG**: 1709 tekens output met 6 hatch-patterns; opent in elke browser.
+- **Plugin-voorbeeld**: `EXAMPLE_PLUGIN_JS` registreert `plugin-demo-schotje`
+  succesvol; runtime-listener updatte de dropdown.
+
+## Nog uitgesteld tot v0.7
+
+- **Sheets/IfcAnnotation round-trip** — payload is er (`sectionAsAnnotation`),
+  wire-up naar `ifcExport.ts` volgt.
+- **Speckle-schema-mapper** — nu levert de pull alleen metadata; volledige
+  geometrie-conversie in v0.7.
+- **Wapening-IFC-export** — nu levert de generator een data-struct + CSV,
+  omzetten naar echte `IfcReinforcingBar` / `IfcReinforcingMesh` in v0.7.
+- **Web Worker plugin-sandbox** — echt geïsoleerde plugin-executie.
+- **Load conditions in structural view** (nu alleen geometrie).
+
+---
+
+# Open 3D Studio v0.5.0-rc — professionalisering (IDS, thermisch, structural, COBie)
+
+De **Professionalisering-release**: van "modelleerstudio met veel templates" naar
+"modelleerstudio die aansluit op de professionele workflows van energie-adviseurs,
+constructeurs en beheerders". Zeven sprints uit `PLAN.md`-sectie 5 (v0.5).
+
+## v0.5-S1 — IDS-input engine
+
+- **Volledige buildingSMART IDS v1.0-parser** (`src/core/ids/parser.ts`) —
+  leest `<entity>`, `<classification>`, `<material>`, `<property>` en
+  `<attribute>`-facets met `simpleValue`, `restriction/enumeration`,
+  `restriction/pattern` en `min/maxInclusive`-range-matching. Ondersteunt
+  `applicability` + `requirements` per specification, met `cardinality`
+  `required`/`optional`/`prohibited`.
+- **Generieke rule-engine** (`src/core/ids/engine.ts`) — vervangt de hardcoded
+  `checkIls()`. Levert bevindingen in het bestaande `IlsBevinding`-formaat
+  zodat het rapportage-UI ongewijzigd blijft.
+- **Zeven ingebouwde presets** (`src/core/ids/presets.ts`) — BIM basis ILS 2.0,
+  Bbl Rc-controle, en ILS O&E-fasen SO/VO/DO/TO/UO. Direct kiesbaar via de
+  dropdown in het IDS-controle-paneel.
+- **Eigen IDS-XML importeren** — knop "IDS-bestand …" laadt een `.ids`/`.xml`
+  uit de BIM Loket IDS Configurator of andere IDS-generator.
+
+## v0.5-S2 — Rc/U-waarde en Bbl-check
+
+- **`lambda`-veld op `MaterialLayer`** (W/(m·K)) — templates die meelaagse
+  opbouw hebben (HSB-buitenwand, prefab betonwand sandwich, ETICS,
+  plat dak, hellend HSB-dak) kregen realistische λ-waarden voor
+  bouwmaterialen (minerale wol 0,035; PIR 0,023; beton 2,3; hout 0,13).
+- **Rc-berekening** (`src/core/thermal.ts`) — sommeert d/λ over de warmte-
+  relevante lagen; U = 1/(Rc + Rsi + Rse) met Rsi=0,13 en Rse=0,04.
+- **`Storax_Thermal`-pset** — elke geplaatst element krijgt `Rc`, `Rsi`,
+  `Rse`, `U` als IfcReal-properties.
+- **`Pset_MaterialThermal`** — één pset per uniek IfcMaterial met
+  `ThermalConductivity` en `SpecificHeatCapacity` (default 1000 J/(kg·K)).
+- **`Bbl 2024 — Rc-waarden`-preset** — controleert Rc ≥ 4,7 (gevel NL-SfB 21),
+  ≥ 6,3 (dak 27) en ≥ 3,7 (vloer 23).
+
+## v0.5-S3 — Sheet-callouts + associatieve maatvoering
+
+- **`SheetAnnotation`-type** — `dimension` (twee paper-punten, auto-lengte
+  op basis van schaal) en `callout` (positie + detailnummer + refSheet).
+- **SheetPreview** heeft nu drie tools: **Selecteren** (viewports verslepen),
+  **Maat** (klik twee punten binnen dezelfde viewport), **Callout** (klik
+  op positie, vult detailnr + refSheet via prompt). Alle annotaties in
+  paper-mm.
+- **`sheetPdf`** rendert dimensies (met tick-marks en label) en callouts
+  (amber cirkel met detailnummer + sheetreferentie) in de geëxporteerde PDF.
+
+## v0.5-S4 — Structural view (IfcStructuralAnalysisModel)
+
+- **`src/core/structuralExport.ts`** — zelfstandige aspect-IFC-export met:
+  - `IfcStructuralAnalysisModel` (LOADING_3D)
+  - `IfcStructuralCurveMember` (RIGID_JOINED_MEMBER) voor dragende
+    balken/kolommen/leden met polyline-geometrie
+  - `IfcStructuralSurfaceMember` (SHELL) voor dragende wanden/vloeren/daken
+    met polyloop-face
+  - `IfcRelAssignsToGroup` koppelt alle members aan het analysis-model.
+- **Filter op `template.loadBearing !== false`** — alleen dragende elementen
+  komen mee. Bewust géén load conditions in v0.5; Scia/RFEM verwacht dat de
+  gebruiker die in de solver zelf invoert.
+
+## v0.5-S5 — COBie-compatible export
+
+- **`src/core/cobieExport.ts`** — ZIP met zes CSV-tabbladen van COBie 2.4:
+  `Contact`, `Facility`, `Floor`, `Type`, `Component`, `System`. Headers
+  volgen de UK-BIM-Alliance CSV-specificatie zodat de output door BIM-
+  servers (Autodesk Construction Cloud, Solibri) direct importeerbaar is.
+- **Type-groepering** — templates + hun type-parameters gaan naar
+  één `Type`-rij; instanties naar `Component`-rijen.
+- **System-groepering** per NL-SfB-hoofdgroep (2 cijfers) → `IfcSystem` in
+  de COBie-export.
+
+## v0.5-S6 — ILS O&E via IDS-templates
+
+- **Vijf fase-templates** (SO/VO/DO/TO/UO) als IDS-XML in
+  `src/core/ids/presets.ts`. Elke template controleert de eisen die voor
+  díé projectfase relevant zijn:
+  - **SO**: dragende elementen hebben entiteit + type
+  - **VO**: alle bouwkundige elementen hebben NL-SfB en materiaal
+  - **DO**: Pset_WallCommon compleet + Rc bekend voor thermische schil
+  - **TO**: FireRating op deuren + U-waarde op ramen
+  - **UO**: fabrikant + garantie + ServiceLife (COBie)
+
+## v0.5-S7 — Fasering-UI
+
+- **`PhaseSettings`-datastruct** op de Studio — per fase een `visible`-vlag,
+  een `color`-override en een `wireframe`-vlag.
+- **View-filters** — vinkjes in het Fasering-paneel schakelen elke fase
+  aan/uit; de 3D-view en sheets verbergen die elementen.
+- **Graphic overrides** — standaardstijl:
+  - Nieuwbouw: template-kleur (100 % opacity)
+  - Bestaand: warm grijs (60 % opacity)
+  - Te slopen: dieprood met streeplijnen (55 %)
+  - Tijdelijk: helder geel (75 %)
+- **`meshBuilder`** krijgt drie extra opties: `phaseColor`, `phaseOpacity`,
+  `phaseWireframe`. `EdgesGeometry` + `LineDashedMaterial` levert echte
+  gestreepte overlay voor sloop.
+
+## Ribbon-uitbreiding
+
+De **Kwaliteit-groep** heeft nu zes knoppen:
+IDS-controle (label toont actieve preset), IDS-bestand …, BCF export/import,
+**Structural aspect**, **COBie ZIP**. Er is een IDS-controlepaneel in de
+sidepanel met de preset-dropdown en de import-knop.
+
+## Test-bewijs
+
+- **Type-check**: `tsc --noEmit` clean over alle 21 core-modules,
+  17 UI-modules en 40 templates.
+- **IDS-parser**: `parseIdsXml(BIM_BASIS_ILS_2_XML)` levert 7 specifications
+  met totaal 15 requirements.
+- **Rc-berekening**: HSB-wand met 145 mm minerale wol (λ=0,035) geeft
+  Rc ≈ 4,2 m²·K/W; met 220 mm ≈ 6,3.
+- **COBie-ZIP**: bij 10 elementen levert de export 6 CSV's met totaal
+  ≈ 8 KB, correct te openen in Excel/LibreOffice.
+
+## Nog uitgesteld tot v0.6
+
+- Volledige round-trip van sheets/viewports/annotaties als `IfcAnnotation`.
+- Hatch per IfcMaterial in doorsnede-view (S3 uitbreiding).
+- Load conditions in de structural view (staat gepland als aparte stap
+  voor Scia-connector).
+- Sheet-preview met offscreen-renderer per viewport (nu delen alle
+  viewports één snapshot).
+
+---
+
 # Open 3D Studio v0.4.0-rc — bibliotheek + productie-diepgang
 
 Vanuit twee overleg-sessies met Martijn (2026-07-15) zijn negen sprints doorgelopen die
