@@ -20,7 +20,7 @@ export const mvPlaat: ComponentTemplate = {
   loadBearing: true,
 
   placementKind: "surface",
-  materialLayers: [{ material: "Beton, gewapend C25/30", thicknessMm: 250, category: "structure", loadBearing: true }],
+  materialLayers: [{ material: "Beton, gewapend C25/30", thicknessMm: 250, category: "structure", loadBearing: true, lambda: 2.3 }],
 
   ifcEntity: "IfcSlab",
   ifcPredefinedType: "BASESLAB",

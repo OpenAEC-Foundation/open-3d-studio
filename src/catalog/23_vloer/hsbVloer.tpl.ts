@@ -20,9 +20,9 @@ export const hsbVloer: ComponentTemplate = {
 
   placementKind: "surface",
   materialLayers: [
-    { material: "OSB-plaat 22 mm", thicknessMm: 22, category: "structure" },
-    { material: "HSB I-ligger 220 mm", thicknessMm: 220, category: "structure", loadBearing: true },
-    { material: "Vloerdekvloer 60 mm", thicknessMm: 60, category: "finish" },
+    { material: "OSB-plaat 22 mm", thicknessMm: 22, category: "structure", lambda: 0.13 },
+    { material: "HSB I-ligger 220 mm", thicknessMm: 220, category: "structure", loadBearing: true, lambda: 0.13 },
+    { material: "Vloerdekvloer 60 mm", thicknessMm: 60, category: "finish", lambda: 1.4 },
   ],
 
   ifcEntity: "IfcSlab",

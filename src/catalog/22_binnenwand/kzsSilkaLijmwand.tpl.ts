@@ -43,6 +43,7 @@ export const kzsSilkaLijmwand: ComponentTemplate = {
       thicknessMm: 100,
       category: "structure",
       loadBearing: true,
+      lambda: 1.0,
     },
   ],
 

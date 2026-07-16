@@ -1,6 +1,6 @@
 import type { PlacedElement } from "./types";
 import { getTemplate } from "../catalog/registry";
-import { elementSolids } from "./meshBuilder";
+import { elementOpenings, elementSolids } from "./meshBuilder";
 
 /** Doorsnede fase 2/3 (v0.6-7).
  *
@@ -67,7 +67,7 @@ export function renderSectionSvg(
     // Bepaal of dit element het snijvlak passeert.
     if (intersectsPlane(el, plane) === false) continue;
 
-    const solids = elementSolids(template, length, el.params, el.opening);
+    const solids = elementSolids(template, length, el.params, elementOpenings(el));
     if (solids.length === 0) continue;
     const layers = template.materialLayers ?? [];
     // Slotbreedte = totale dikte-envelope van het element op papier.
@@ -171,7 +171,7 @@ export function sectionAsAnnotation(
     if (!intersectsPlane(el, plane)) continue;
     const length = Math.hypot(el.end.x - el.start.x, el.end.z - el.start.z);
     if (length < 1e-6) continue;
-    const solids = elementSolids(template, length, el.params, el.opening);
+    const solids = elementSolids(template, length, el.params, elementOpenings(el));
     const layers = template.materialLayers ?? [];
     for (let i = 0; i < solids.length; i++) {
       const s = solids[i];

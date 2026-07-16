@@ -21,8 +21,8 @@ export const prefabDakelement: ComponentTemplate = {
 
   placementKind: "surface",
   materialLayers: [
-    { material: "HSB-cassette", thicknessMm: 300, category: "structure", loadBearing: true },
-    { material: "Dakpannen (keramisch)", thicknessMm: 22, category: "cladding" },
+    { material: "HSB-cassette", thicknessMm: 300, category: "structure", loadBearing: true, lambda: 0.05 },
+    { material: "Dakpannen (keramisch)", thicknessMm: 22, category: "cladding", lambda: 1.0 },
   ],
 
   ifcEntity: "IfcRoof",

@@ -1,6 +1,7 @@
 import * as WebIFC from "web-ifc";
 import type { PlacedElement, Storey } from "./types";
 import { getTemplate } from "../catalog/registry";
+import { getIfcApi, newIfcGuid } from "./ifcCommon";
 
 const { IFC4 } = WebIFC;
 
@@ -17,16 +18,6 @@ const { IFC4 } = WebIFC;
  *  de geometrie en de gebruiker vult loads in de solver. Dat is standaard praktijk
  *  omdat elke rekenkern eigen belastingsklassen hanteert. */
 
-const GUID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
-function newIfcGuid(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  let num = 0n;
-  for (const b of bytes) num = (num << 8n) | BigInt(b);
-  let out = GUID_CHARS[Number(num >> 126n)];
-  for (let i = 20; i >= 0; i--) out += GUID_CHARS[Number((num >> BigInt(i * 6)) & 63n)];
-  return out;
-}
-
 const CURVE_ENTITIES = new Set(["IfcBeam", "IfcColumn", "IfcMember"]);
 const SURFACE_ENTITIES = new Set(["IfcWall", "IfcSlab", "IfcRoof", "IfcPlate"]);
 
@@ -35,9 +26,7 @@ export async function exportStructuralView(
   opts: { projectName?: string; storeys?: Storey[] } = {},
 ): Promise<Uint8Array> {
   const projectName = opts.projectName ?? "Open 3D Studio — structural view";
-  const api = new WebIFC.IfcAPI();
-  api.SetWasmPath("/wasm/", true);
-  await api.Init();
+  const api = await getIfcApi();
 
   const modelID = api.CreateModel({
     schema: WebIFC.Schemas.IFC4,

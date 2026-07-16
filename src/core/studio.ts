@@ -17,7 +17,9 @@ import type {
   TextLabel,
   ViewName,
 } from "./types";
-import { buildElementGroup, disposeGroup } from "./meshBuilder";
+import { buildElementGroup, disposeGroup, elementOpenings } from "./meshBuilder";
+import { deriveMainCategory } from "./mainCategory";
+import type { ElementJoin, TypeDefinition } from "./types";
 import { exportElementsToIfc } from "./ifcExport";
 import { importDxf } from "./dxfImport";
 import { renderSheetPdf } from "./sheetPdf";
@@ -31,7 +33,15 @@ export type ToolName =
   | "circle"
   | "measure"
   | "text"
-  | "section";
+  | "section"
+  // v0.7 bewerken-gereedschappen
+  | "align"        // klik referentie-element, dan uit te lijnen element
+  | "mirror"       // klik 2 punten (spiegelas); werkt op de selectie
+  | "split"        // klik op element: splitsen op dat punt
+  | "opening"      // klik op element: sparing op dat punt
+  // v0.8
+  | "opening-poly" // klik hoekpunten op één element; rechtsklik rondt af
+  | "match";       // klik bron-element, dan doel-element(en)
 export type { ViewName };
 
 /** Fase-instellingen voor de view: welke fasen zichtbaar zijn en welke grafische
@@ -70,6 +80,10 @@ export interface StudioCallbacks {
   onOriginChanged?: (origin: ProjectOrigin) => void;
   onGeoRefChanged?: (geoRef: { enabled: boolean; rdX: number; rdY: number; napZ: number }) => void;
   onPhaseSettingsChanged?: (phaseSettings: PhaseSettings) => void;
+  /** v0.7-S1: volledige selectie (ids); onSelectionChanged blijft de primaire melden. */
+  onSelectionSetChanged?: (ids: string[]) => void;
+  /** v0.7-S5: typenlijst gewijzigd. */
+  onTypesChanged?: (types: TypeDefinition[]) => void;
   onStatus?: (msg: string) => void;
 }
 
@@ -93,8 +107,29 @@ export class Studio {
   private measures: MeasureSegment[] = [];
   private texts: TextLabel[] = [];
   private selectedId: string | null = null;
+  /** v0.7-S1: volledige selectie; selectedId blijft de primaire (anchor). */
+  private selectedIds = new Set<string>();
+  /** v0.7-S3: verbindingen tussen lijnelementen (L/T), meebewegend. */
+  joins: ElementJoin[] = [];
+  /** v0.7-S5: benoemde typen (project + gebruikersbibliotheek). */
+  types: TypeDefinition[] = [];
+  /** v0.7-S5: actief type voor plaatsing (currentParams volgen bij setActiveType). */
+  activeTypeId: string | null = null;
   private layerVisibility = new Map<string, boolean>();
   private dxfGroups = new Map<string, THREE.Group>();
+  // v0.7-S2: eind-handles + snap-markers
+  private handleGroup = new THREE.Group();
+  private snapMarker: THREE.Mesh | null = null;
+  private handleDrag: { elementId: string; which: "start" | "end"; moved: boolean } | null = null;
+  // v0.7-S1: venster-selectie (Shift+drag)
+  private marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  private marqueeDiv: HTMLDivElement | null = null;
+  // v0.7 tool-tussenstanden
+  private alignRefId: string | null = null;
+  private mirrorStart: THREE.Vector3 | null = null;
+  // v0.8 tool-tussenstanden
+  private polyDraft: { elementId: string; points: [number, number][] } | null = null;
+  private matchSourceId: string | null = null;
 
   storeys: Storey[] = [{ id: "storey-0", name: "00 begane grond", elevation: 0 }];
   activeStoreyId = "storey-0";
@@ -147,7 +182,8 @@ export class Studio {
 
   constructor() {
     this.currentParams = { ...getTemplate(this.activeTemplateId).defaults };
-    for (const t of templates) this.layerVisibility.set(t.category, true);
+    // v0.7-S6: lagen op hoofdcategorie (12 vaste) i.p.v. 24 losse strings
+    for (const t of templates) this.layerVisibility.set(deriveMainCategory(t), true);
     this.layerVisibility.set(LAYER_LINES, true);
     this.layerVisibility.set(LAYER_MEASURES, true);
     this.layerVisibility.set(LAYER_TEXTS, true);
@@ -183,7 +219,15 @@ export class Studio {
       this.textGroup,
       this.dxfRoot,
       this.gridGroup,
+      this.handleGroup,
     );
+    // v0.7-S1: marquee-overlay voor venster-selectie (Shift+drag)
+    const marqueeDiv = document.createElement("div");
+    marqueeDiv.style.cssText =
+      "position:absolute;border:1px dashed #d97706;background:rgba(217,119,6,0.08);pointer-events:none;display:none;z-index:5;";
+    container.style.position = "relative";
+    container.appendChild(marqueeDiv);
+    this.marqueeDiv = marqueeDiv;
     world.camera.controls.setLookAt(14, 10, 14, 0, 0, 0);
     this.raycaster.params.Line = { threshold: 0.05 };
     this.refreshOriginHelper();
@@ -214,6 +258,10 @@ export class Studio {
     });
 
     this.bindPointerEvents();
+
+    // v0.7-S5: gebruikersbibliotheek met typen meteen beschikbaar
+    this.mergeUserTypeLibrary();
+    this.callbacks.onTypesChanged?.([...this.types]);
 
     // Renderergrootte volgt de container (ook bij paneelwijzigingen en late layout)
     const resize = () => {
@@ -347,7 +395,14 @@ export class Studio {
           end: v(d.end),
           params: { ...d.params },
           storeyId: resolveStorey(d),
-          opening: d.opening ?? null,
+          opening: null,
+          // v0.7: openings-array; oudere IFC's hebben nog het enkelvoudige veld
+          openings: (d.openings ?? (d.opening ? [d.opening] : [])).map((o: any) => ({
+            id: crypto.randomUUID(),
+            shape: "rect",
+            kind: "vrij",
+            ...o,
+          })),
           // fase overleeft de IFC-round-trip; hostId niet — element-ids worden
           // bij heropenen opnieuw gegenereerd, dus die koppeling zou bungelen
           phase: d.phase ?? "new",
@@ -392,6 +447,8 @@ export class Studio {
         storeys: this.storeys,
         grid: this.grid,
         geoRef: this.geoRef.enabled ? this.geoRef : undefined,
+        joins: this.joins,
+        types: this.types,
       });
       if (
         await this.saveAs(bytes, "open-3d-studio_storax-componenten.ifc", {
@@ -858,12 +915,16 @@ export class Studio {
         params: { ...e.params },
         storeyId: e.storeyId,
         opening: e.opening ? { ...e.opening } : null,
+        openings: (e.openings ?? []).map((o) => ({ ...o })),
         merk: e.merk,
+        typeId: e.typeId,
         // v0.6-fix: fasering en hosting horen de undo/save-round-trip te overleven
         phase: e.phase,
         hostId: e.hostId,
         spaceId: e.spaceId,
       })),
+      joins: this.joins.map((j) => ({ ...j })),
+      types: this.types.map((t) => ({ ...t, typeParams: { ...t.typeParams } })),
       lines: this.lines.map((l) => ({ id: l.id, a: v(l.a), b: v(l.b) })),
       measures: this.measures.map((m) => ({ id: m.id, a: v(m.a), b: v(m.b), length: m.length })),
       texts: this.texts.map((t) => ({ id: t.id, position: v(t.position), text: t.text })),
@@ -910,8 +971,35 @@ export class Studio {
     for (const el of this.elements) {
       this.elementCounters.set(el.templateId, (this.elementCounters.get(el.templateId) ?? 0) + 1);
     }
+    // v0.7: migratie legacy enkelvoudige sparing → openings[] met id/shape
+    for (const el of this.elements) {
+      if (el.opening) {
+        el.openings = [
+          ...(el.openings ?? []),
+          { id: crypto.randomUUID(), shape: "rect", kind: "vrij", ...el.opening },
+        ];
+        el.opening = null;
+      }
+    }
+    // v0.7-S3/S5: joins en typen mee-herstellen (verwijzingen naar verdwenen
+    // elementen/templates opruimen)
+    const elementIds = new Set(this.elements.map((e) => e.id));
+    this.joins = ((state.joins ?? []) as ElementJoin[]).filter(
+      (j) => elementIds.has(j.aId) && elementIds.has(j.bId),
+    );
+    this.types = ((state.types ?? []) as TypeDefinition[]).filter((t) => {
+      try {
+        getTemplate(t.templateId);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    this.mergeUserTypeLibrary();
     this.selectedId = null;
+    this.selectedIds.clear();
     this.refreshOriginHelper();
+    this.refreshHandles();
     this.rebuildGrid();
     this.rebuildAuthored();
     this.rebuildLines();
@@ -1283,29 +1371,26 @@ export class Studio {
       start: el.start.clone().add(offset),
       end: el.end.clone().add(offset),
       params: { ...el.params },
-      opening: el.opening ? { ...el.opening } : null,
+      opening: null,
+      openings: elementOpenings(el).map((o) => ({ ...o, id: crypto.randomUUID() })),
     };
     this.elements.push(copy);
+    this.selectedIds.clear();
+    this.selectedIds.add(copy.id);
     this.selectedId = copy.id;
     this.rebuildAuthored();
+    this.refreshHandles();
     this.emitElements();
-    this.callbacks.onSelectionChanged?.(copy.id);
+    this.emitSelection();
     this.setStatus(`${copy.name} gekopieerd — versleep hem in de selecteermodus.`);
   }
 
-  setElementOpening(id: string, opening: Opening | null) {
-    const el = this.elements.find((e) => e.id === id);
-    if (!el) return;
-    this.pushUndo();
-    el.opening = opening;
-    this.rebuildAuthored();
-    this.emitElements();
-  }
   getLayers(): { name: string; visible: boolean }[] {
-    // Categorieën van runtime-templates (.o3st/plugin/IFC-family) verschijnen
+    // Hoofdcategorieën van runtime-templates (.o3st/plugin/IFC-family) verschijnen
     // hier lazily — de constructor kent alleen de build-tijd catalogus.
     for (const t of allRegistryTemplates()) {
-      if (!this.layerVisibility.has(t.category)) this.layerVisibility.set(t.category, true);
+      const main = deriveMainCategory(t);
+      if (!this.layerVisibility.has(main)) this.layerVisibility.set(main, true);
     }
     return [...this.layerVisibility.entries()].map(([name, visible]) => ({ name, visible }));
   }
@@ -1344,14 +1429,20 @@ export class Studio {
     this.tool = tool;
     this.cancelDrawing();
     const hints: Record<ToolName, string> = {
-      select: "Selecteren: klik een getekend element aan.",
-      draw: `${getTemplate(this.activeTemplateId).name} tekenen: klik het startpunt (Esc annuleert, snap 50 mm).`,
+      select: "Selecteren: klik (Ctrl = toevoegen, Shift+slepen = venster; L→R omsluitend, R→L kruisend).",
+      draw: `${getTemplate(this.activeTemplateId).name} tekenen: klik het startpunt (Esc annuleert, snapt op raster/stramien/elementen).`,
       line: "Lijnen tekenen: klik punten achter elkaar (Esc of rechtermuisknop stopt).",
       rect: "Rechthoek: klik twee tegenoverliggende hoekpunten.",
       circle: "Cirkel: klik het middelpunt en daarna een punt op de cirkel.",
       measure: "Meten: klik twee punten.",
       text: "Tekst plaatsen: klik een punt (tekst instelbaar in het zijpaneel).",
       section: "Doorsnede: klik een punt; alles vóór dat punt (t.o.v. de kijkrichting) wordt weggesneden.",
+      align: "Uitlijnen: klik eerst het referentie-element, dan het uit te lijnen element.",
+      mirror: "Spiegelen: selecteer eerst elementen, klik dan twee punten voor de spiegelas (maakt een kopie).",
+      split: "Splitsen: klik op een lijnelement op het splitspunt.",
+      opening: "Sparing: klik op een element om daar een sparing te plaatsen.",
+      "opening-poly": "Polygoon-sparing: klik hoekpunten op één element; rechtsklik rondt af (min. 3), Esc annuleert.",
+      match: "Eigenschappen overnemen: klik het bron-element, daarna de doel-elementen (Esc stopt).",
     };
     this.setStatus(hints[tool]);
   }
@@ -1378,10 +1469,681 @@ export class Studio {
     return this.elements.find((e) => e.id === this.selectedId) ?? null;
   }
 
-  selectElement(id: string | null) {
-    this.selectedId = id;
+  selectElement(id: string | null, opts: { additive?: boolean } = {}) {
+    if (id === null) {
+      this.selectedIds.clear();
+      this.selectedId = null;
+    } else if (opts.additive) {
+      // Ctrl-klik: toggle in de selectie; anchor = laatst aangeklikt (of ander lid)
+      if (this.selectedIds.has(id)) {
+        this.selectedIds.delete(id);
+        if (this.selectedId === id) this.selectedId = [...this.selectedIds].pop() ?? null;
+      } else {
+        this.selectedIds.add(id);
+        this.selectedId = id;
+      }
+    } else {
+      this.selectedIds.clear();
+      this.selectedIds.add(id);
+      this.selectedId = id;
+    }
     this.rebuildAuthored();
-    this.callbacks.onSelectionChanged?.(id);
+    this.refreshHandles();
+    this.emitSelection();
+  }
+
+  /** v0.7-S1: meerdere elementen in één keer selecteren (venster-selectie). */
+  selectMany(ids: string[], opts: { additive?: boolean } = {}) {
+    if (!opts.additive) this.selectedIds.clear();
+    for (const id of ids) this.selectedIds.add(id);
+    this.selectedId = ids[ids.length - 1] ?? this.selectedId ?? null;
+    if (this.selectedId && !this.selectedIds.has(this.selectedId)) {
+      this.selectedId = [...this.selectedIds].pop() ?? null;
+    }
+    this.rebuildAuthored();
+    this.refreshHandles();
+    this.emitSelection();
+  }
+
+  getSelectedIds(): string[] {
+    return [...this.selectedIds];
+  }
+
+  private emitSelection() {
+    this.callbacks.onSelectionChanged?.(this.selectedId);
+    this.callbacks.onSelectionSetChanged?.([...this.selectedIds]);
+  }
+
+  // ------------------------------------------------------------------ v0.7-S1: klembord
+  private static CLIPBOARD_KEY = "o3s-clipboard";
+
+  /** Kopieer de selectie naar het klembord (localStorage: werkt cross-project). */
+  copySelection(): number {
+    const els = this.elements.filter((e) => this.selectedIds.has(e.id));
+    if (els.length === 0) return 0;
+    const v = (p: THREE.Vector3) => [p.x, p.y, p.z];
+    const payload = els.map((e) => ({
+      templateId: e.templateId,
+      name: e.name,
+      start: v(e.start),
+      end: v(e.end),
+      params: { ...e.params },
+      openings: elementOpenings(e).map((o) => ({ ...o, id: undefined })),
+      phase: e.phase,
+      typeId: e.typeId,
+    }));
+    try {
+      localStorage.setItem(Studio.CLIPBOARD_KEY, JSON.stringify(payload));
+    } catch {
+      /* localStorage vol/uit — klembord werkt dan alleen niet cross-project */
+    }
+    this.setStatus(`${els.length} element(en) gekopieerd.`);
+    return els.length;
+  }
+
+  /** Knip: kopieer + verwijder. */
+  cutSelection(): number {
+    const n = this.copySelection();
+    if (n > 0) this.removeSelected();
+    return n;
+  }
+
+  /** Plak het klembord: nieuwe ids/namen, kleine offset, plaksel wordt de selectie.
+   *  Nogmaals plakken verschuift opnieuw — zo stapelen kopieën niet. */
+  paste(): number {
+    let payload: any[];
+    try {
+      payload = JSON.parse(localStorage.getItem(Studio.CLIPBOARD_KEY) ?? "[]");
+    } catch {
+      payload = [];
+    }
+    if (!Array.isArray(payload) || payload.length === 0) {
+      this.setStatus("Klembord is leeg.");
+      return 0;
+    }
+    this.pushUndo();
+    const v = (a: number[]) => new THREE.Vector3(a[0], a[1], a[2]);
+    const offset = new THREE.Vector3(0.5, 0, 0.5);
+    const newIds: string[] = [];
+    for (const d of payload) {
+      let template;
+      try {
+        template = getTemplate(d.templateId);
+      } catch {
+        continue;
+      }
+      const n = (this.elementCounters.get(template.id) ?? 0) + 1;
+      this.elementCounters.set(template.id, n);
+      const el: PlacedElement = {
+        id: crypto.randomUUID(),
+        templateId: d.templateId,
+        name: `${template.name} ${String(n).padStart(2, "0")}`,
+        start: v(d.start).add(offset),
+        end: v(d.end).add(offset),
+        params: { ...d.params },
+        storeyId: this.activeStoreyId,
+        opening: null,
+        openings: (d.openings ?? []).map((o: any) => ({ ...o, id: crypto.randomUUID() })),
+        phase: d.phase ?? "new",
+        typeId: d.typeId,
+      };
+      this.elements.push(el);
+      newIds.push(el.id);
+    }
+    this.rebuildAuthored();
+    this.emitElements();
+    this.selectMany(newIds);
+    this.setStatus(`${newIds.length} element(en) geplakt — versleep ze of plak nogmaals.`);
+    return newIds.length;
+  }
+
+  /** Verwijder de volledige selectie in één undo-stap. */
+  removeSelected() {
+    if (this.selectedIds.size === 0) return;
+    this.pushUndo();
+    const doomed = new Set(this.selectedIds);
+    // kozijn-gekoppelde sparingen in hosts opruimen + joins die eraan hangen
+    for (const el of this.elements) {
+      if (el.openings) el.openings = el.openings.filter((o) => !o.id || !doomed.has(o.id));
+    }
+    this.joins = this.joins.filter((j) => !doomed.has(j.aId) && !doomed.has(j.bId));
+    this.elements = this.elements.filter((e) => !doomed.has(e.id));
+    this.selectedIds.clear();
+    this.selectedId = null;
+    this.rebuildAuthored();
+    this.refreshHandles();
+    this.emitElements();
+    this.emitSelection();
+    this.setStatus(`${doomed.size} element(en) verwijderd.`);
+  }
+
+  // ------------------------------------------------------------------ v0.7-S2: snapping
+  /** Snap `point` op endpoints/midpoints van bestaande lijnelementen (0,25 m
+   *  zoekradius). Element-snap wint van raster-snap. Toont een amber marker. */
+  private snapToElements(point: THREE.Vector3, excludeIds: Set<string> = new Set()): THREE.Vector3 {
+    const TOL = 0.25;
+    let best: { p: THREE.Vector3; d: number } | null = null;
+    for (const el of this.elements) {
+      if (excludeIds.has(el.id)) continue;
+      const candidates = [
+        el.start,
+        el.end,
+        el.start.clone().lerp(el.end, 0.5),
+      ];
+      for (const c of candidates) {
+        const d = Math.hypot(point.x - c.x, point.z - c.z);
+        if (d < TOL && (!best || d < best.d)) best = { p: c.clone(), d };
+      }
+    }
+    if (best) {
+      const snapped = best.p.clone();
+      snapped.y = point.y; // peil van het tekenvlak behouden
+      this.showSnapMarker(snapped);
+      return snapped;
+    }
+    this.hideSnapMarker();
+    return point;
+  }
+
+  private showSnapMarker(p: THREE.Vector3) {
+    if (!this.snapMarker) {
+      this.snapMarker = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.12, 0.12),
+        new THREE.MeshBasicMaterial({ color: 0xd97706, depthTest: false }),
+      );
+      this.snapMarker.renderOrder = 10;
+      this.handleGroup.add(this.snapMarker);
+    }
+    this.snapMarker.position.copy(p);
+    this.snapMarker.visible = true;
+  }
+
+  private hideSnapMarker() {
+    if (this.snapMarker) this.snapMarker.visible = false;
+  }
+
+  // ------------------------------------------------------------------ v0.7-S2: eind-handles
+  /** Toon bolvormige handles op start/end van het (enige) geselecteerde lijnelement. */
+  private refreshHandles() {
+    for (const child of [...this.handleGroup.children]) {
+      if (child === this.snapMarker) continue;
+      this.handleGroup.remove(child);
+      disposeGroup(child);
+    }
+    if (this.selectedIds.size !== 1 || !this.selectedId) return;
+    const el = this.elements.find((e) => e.id === this.selectedId);
+    if (!el) return;
+    const template = getTemplate(el.templateId);
+    if (template.placementKind === "point") return;
+    for (const which of ["start", "end"] as const) {
+      const handle = new THREE.Mesh(
+        new THREE.SphereGeometry(0.09, 12, 12),
+        new THREE.MeshBasicMaterial({ color: 0xd97706, depthTest: false }),
+      );
+      handle.renderOrder = 11;
+      handle.position.copy(el[which]);
+      handle.userData.handleFor = el.id;
+      handle.userData.handleWhich = which;
+      this.handleGroup.add(handle);
+    }
+  }
+
+  // ------------------------------------------------------------------ v0.7-S2: uitlijnen/spiegelen/reeks/offset
+  /** Lijn `moveId` uit op de as van `refId`: verschuift haaks tot de assen samenvallen.
+   *  Alleen voor (nagenoeg) evenwijdige elementen. */
+  alignToElement(refId: string, moveId: string): boolean {
+    const ref = this.elements.find((e) => e.id === refId);
+    const mv = this.elements.find((e) => e.id === moveId);
+    if (!ref || !mv || refId === moveId) return false;
+    const rd = new THREE.Vector2(ref.end.x - ref.start.x, ref.end.z - ref.start.z).normalize();
+    const md = new THREE.Vector2(mv.end.x - mv.start.x, mv.end.z - mv.start.z).normalize();
+    const cross = Math.abs(rd.x * md.y - rd.y * md.x);
+    if (cross > 0.09) {
+      this.setStatus("Uitlijnen: elementen zijn niet evenwijdig (±5°).");
+      return false;
+    }
+    // haakse afstand van mv.start tot de referentie-as
+    const rel = new THREE.Vector2(mv.start.x - ref.start.x, mv.start.z - ref.start.z);
+    const across = rel.x * rd.y - rel.y * rd.x; // signed
+    const shift = new THREE.Vector3(-rd.y * -across, 0, rd.x * -across);
+    this.pushUndo();
+    mv.start.add(shift);
+    mv.end.add(shift);
+    this.resolveJoins(mv.id);
+    this.rebuildAuthored();
+    this.refreshHandles();
+    this.emitElements();
+    this.setStatus(`${mv.name} uitgelijnd op ${ref.name} (${Math.abs(across * 1000).toFixed(0)} mm verschoven).`);
+    return true;
+  }
+
+  /** Spiegel de selectie over de as p1→p2 (bovenaanzicht). Kopie = Revit-default. */
+  mirrorSelection(p1: THREE.Vector3, p2: THREE.Vector3, copy = true) {
+    const els = this.elements.filter((e) => this.selectedIds.has(e.id));
+    if (els.length === 0) return;
+    const d = new THREE.Vector2(p2.x - p1.x, p2.z - p1.z);
+    if (d.lengthSq() < 1e-9) return;
+    d.normalize();
+    const reflect = (p: THREE.Vector3): THREE.Vector3 => {
+      const rel = new THREE.Vector2(p.x - p1.x, p.z - p1.z);
+      const along = rel.x * d.x + rel.y * d.y;
+      const proj = new THREE.Vector2(d.x * along, d.y * along);
+      const mirrored = new THREE.Vector2(2 * proj.x - rel.x, 2 * proj.y - rel.y);
+      return new THREE.Vector3(p1.x + mirrored.x, p.y, p1.z + mirrored.y);
+    };
+    this.pushUndo();
+    const newIds: string[] = [];
+    for (const el of els) {
+      if (copy) {
+        const template = getTemplate(el.templateId);
+        const n = (this.elementCounters.get(template.id) ?? 0) + 1;
+        this.elementCounters.set(template.id, n);
+        const dup: PlacedElement = {
+          ...el,
+          id: crypto.randomUUID(),
+          name: `${template.name} ${String(n).padStart(2, "0")}`,
+          start: reflect(el.end), // start/end wisselen zodat de as-richting spiegelt
+          end: reflect(el.start),
+          params: { ...el.params },
+          opening: null,
+          openings: elementOpenings(el).map((o) => ({ ...o, id: crypto.randomUUID() })),
+        };
+        this.elements.push(dup);
+        newIds.push(dup.id);
+      } else {
+        const ns = reflect(el.end);
+        const ne = reflect(el.start);
+        el.start.copy(ns);
+        el.end.copy(ne);
+      }
+    }
+    this.rebuildAuthored();
+    this.emitElements();
+    if (copy) this.selectMany(newIds);
+    this.setStatus(`${els.length} element(en) gespiegeld${copy ? " (kopie)" : ""}.`);
+  }
+
+  /** Reeks: n kopieën van de selectie, h.o.h. langs de as van het primaire element. */
+  arraySelection(count: number, spacingMm: number) {
+    const els = this.elements.filter((e) => this.selectedIds.has(e.id));
+    const primary = this.elements.find((e) => e.id === this.selectedId) ?? els[0];
+    if (!primary || els.length === 0 || count < 1) return;
+    let dir = new THREE.Vector3(primary.end.x - primary.start.x, 0, primary.end.z - primary.start.z);
+    if (dir.lengthSq() < 1e-9) dir = new THREE.Vector3(1, 0, 0);
+    dir.normalize();
+    // haaks op de as — een reeks wanden naast elkaar is het normale geval
+    const step = new THREE.Vector3(dir.z, 0, -dir.x).multiplyScalar(spacingMm / 1000);
+    this.pushUndo();
+    const newIds: string[] = [];
+    for (let i = 1; i <= count; i++) {
+      for (const el of els) {
+        const template = getTemplate(el.templateId);
+        const n = (this.elementCounters.get(template.id) ?? 0) + 1;
+        this.elementCounters.set(template.id, n);
+        const dup: PlacedElement = {
+          ...el,
+          id: crypto.randomUUID(),
+          name: `${template.name} ${String(n).padStart(2, "0")}`,
+          start: el.start.clone().addScaledVector(step, i),
+          end: el.end.clone().addScaledVector(step, i),
+          params: { ...el.params },
+          opening: null,
+          openings: elementOpenings(el).map((o) => ({ ...o, id: crypto.randomUUID() })),
+        };
+        this.elements.push(dup);
+        newIds.push(dup.id);
+      }
+    }
+    this.rebuildAuthored();
+    this.emitElements();
+    this.selectMany(newIds);
+    this.setStatus(`Reeks geplaatst: ${count} × ${els.length} element(en), h.o.h. ${spacingMm} mm.`);
+  }
+
+  /** Offset: evenwijdige kopie van de selectie op afstand (haaks op elk element). */
+  offsetSelection(distanceMm: number) {
+    this.arraySelection(1, distanceMm);
+  }
+
+  // ------------------------------------------------------------------ v0.7-S3: joins
+  /** Zoek na een eindpunt-wijziging een verbindingspartner: eindpunt-op-eindpunt (L)
+   *  of eindpunt-op-lijf (T). Maakt de join en trekt het eindpunt exact op maat. */
+  private autoJoinAt(el: PlacedElement, which: "start" | "end") {
+    const TOL = 0.15;
+    const p = el[which];
+    for (const other of this.elements) {
+      if (other.id === el.id) continue;
+      const otherTemplate = getTemplate(other.templateId);
+      if (otherTemplate.placementKind === "point" || otherTemplate.placementKind === "surface") continue;
+      // al verbonden op dit eindpunt?
+      if (this.joins.some((j) => (j.aId === el.id && j.aEnd === which) )) return;
+      for (const oWhich of ["start", "end"] as const) {
+        if (p.distanceTo(other[oWhich]) < TOL) {
+          p.copy(other[oWhich]); // exact samenvallen (L)
+          this.joins.push({ id: crypto.randomUUID(), aId: el.id, aEnd: which, bId: other.id, bEnd: oWhich });
+          this.setStatus(`Hoekverbinding gemaakt: ${el.name} ↔ ${other.name}.`);
+          return;
+        }
+      }
+      // T-verbinding: eindpunt op het lijf van de ander
+      const dx = other.end.x - other.start.x;
+      const dz = other.end.z - other.start.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 1e-6) continue;
+      const ux = dx / len, uz = dz / len;
+      const rx = p.x - other.start.x, rz = p.z - other.start.z;
+      const along = rx * ux + rz * uz;
+      const across = Math.abs(rx * uz - rz * ux);
+      if (along > TOL && along < len - TOL && across < TOL) {
+        p.set(other.start.x + ux * along, p.y, other.start.z + uz * along); // projecteer op as
+        this.joins.push({ id: crypto.randomUUID(), aId: el.id, aEnd: which, bId: other.id, bEnd: "path" });
+        this.setStatus(`T-verbinding gemaakt: ${el.name} ⊥ ${other.name}.`);
+        return;
+      }
+    }
+  }
+
+  /** Meebewegende joins: als `movedId` is verplaatst, trek verbonden eindpunten bij.
+   *  v0.8: L-verbindingen bij ~90° krijgen een stompe hoekaansluiting (butt joint):
+   *  de doorlopende wand (b) steekt de halve dikte van de aansluitende wand (a)
+   *  vóórbij het assnijpunt, de aansluitende wand stopt op het lijf van de
+   *  doorlopende — geen dubbel volume meer op de hoek. */
+  private resolveJoins(movedId: string) {
+    const axisOf = (el: PlacedElement, joinedEnd: "start" | "end") => {
+      const o = el[joinedEnd === "start" ? "end" : "start"]; // vaste (niet-verbonden) kant
+      const p = el[joinedEnd];
+      const dx = p.x - o.x, dz = p.z - o.z;
+      const len = Math.hypot(dx, dz);
+      return len < 1e-6 ? null : { o, ux: dx / len, uz: dz / len };
+    };
+    const depthOf = (el: PlacedElement) => {
+      try {
+        return getTemplate(el.templateId).depth(el.params);
+      } catch {
+        return 0;
+      }
+    };
+    for (const j of this.joins) {
+      const a = this.elements.find((e) => e.id === j.aId);
+      const b = this.elements.find((e) => e.id === j.bId);
+      if (!a || !b) continue;
+      if (j.bEnd === "path") {
+        // T: a's eindpunt stopt op het lijf van b (halve dikte vóór de as)
+        const dx = b.end.x - b.start.x, dz = b.end.z - b.start.z;
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-6) continue;
+        const ux = dx / len, uz = dz / len;
+        const p = a[j.aEnd];
+        const along = Math.max(0, Math.min(len, (p.x - b.start.x) * ux + (p.z - b.start.z) * uz));
+        const onAxis = { x: b.start.x + ux * along, z: b.start.z + uz * along };
+        const aAxis = axisOf(a, j.aEnd);
+        const setback = depthOf(b) / 2;
+        if (aAxis && setback > 0.001) {
+          p.set(onAxis.x - aAxis.ux * setback, p.y, onAxis.z - aAxis.uz * setback);
+        } else {
+          p.set(onAxis.x, p.y, onAxis.z);
+        }
+        continue;
+      }
+      // L-verbinding: assnijpunt bepalen uit beide (oneindige) assen
+      const aAxis = axisOf(a, j.aEnd);
+      const bAxis = axisOf(b, j.bEnd as "start" | "end");
+      if (!aAxis || !bAxis) continue;
+      const cross = aAxis.ux * bAxis.uz - aAxis.uz * bAxis.ux;
+      if (Math.abs(cross) < 0.09) {
+        // (bijna) evenwijdig: geen snijpunt — volger kopieert de ander
+        if (j.aId === movedId) {
+          b[j.bEnd as "start" | "end"].x = a[j.aEnd].x;
+          b[j.bEnd as "start" | "end"].z = a[j.aEnd].z;
+        } else {
+          a[j.aEnd].x = b[j.bEnd as "start" | "end"].x;
+          a[j.aEnd].z = b[j.bEnd as "start" | "end"].z;
+        }
+        continue;
+      }
+      // snijpunt P: a.o + t·ua = b.o + s·ub
+      const rx = bAxis.o.x - aAxis.o.x;
+      const rz = bAxis.o.z - aAxis.o.z;
+      const t = (rx * bAxis.uz - rz * bAxis.ux) / cross;
+      const P = { x: aAxis.o.x + aAxis.ux * t, z: aAxis.o.z + aAxis.uz * t };
+      const angle = Math.abs((Math.atan2(cross, aAxis.ux * bAxis.ux + aAxis.uz * bAxis.uz) * 180) / Math.PI);
+      const haaks = angle > 75 && angle < 105;
+      const dA = depthOf(a);
+      const dB = depthOf(b);
+      if (haaks && dA > 0.001 && dB > 0.001) {
+        // butt joint: b (doorlopend) steekt dA/2 voorbij P, a stopt dB/2 vóór P
+        b[j.bEnd as "start" | "end"].set(P.x + bAxis.ux * (dA / 2), b[j.bEnd as "start" | "end"].y, P.z + bAxis.uz * (dA / 2));
+        a[j.aEnd].set(P.x - aAxis.ux * (dB / 2), a[j.aEnd].y, P.z - aAxis.uz * (dB / 2));
+      } else {
+        // scheve hoek: eindpunten samen op het assnijpunt
+        a[j.aEnd].set(P.x, a[j.aEnd].y, P.z);
+        b[j.bEnd as "start" | "end"].set(P.x, b[j.bEnd as "start" | "end"].y, P.z);
+      }
+    }
+  }
+
+  /** Verbreek alle verbindingen van een element. */
+  unjoinElement(id: string) {
+    const before = this.joins.length;
+    this.joins = this.joins.filter((j) => j.aId !== id && j.bId !== id);
+    if (this.joins.length < before) {
+      this.setStatus(`${before - this.joins.length} verbinding(en) verbroken.`);
+      this.emitElements();
+    } else {
+      this.setStatus("Geen verbindingen op dit element.");
+    }
+  }
+
+  /** Splits een lijnelement op een punt langs zijn as. */
+  splitElementAt(id: string, point: THREE.Vector3) {
+    const el = this.elements.find((e) => e.id === id);
+    if (!el) return;
+    const template = getTemplate(el.templateId);
+    if (template.placementKind === "point" || template.placementKind === "surface") {
+      this.setStatus("Splitsen werkt alleen op lijnvormige elementen.");
+      return;
+    }
+    const dx = el.end.x - el.start.x, dz = el.end.z - el.start.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.2) return;
+    const ux = dx / len, uz = dz / len;
+    const along = Math.max(0.05, Math.min(len - 0.05, (point.x - el.start.x) * ux + (point.z - el.start.z) * uz));
+    const splitPoint = new THREE.Vector3(el.start.x + ux * along, el.start.y, el.start.z + uz * along);
+    this.pushUndo();
+    const n = (this.elementCounters.get(template.id) ?? 0) + 1;
+    this.elementCounters.set(template.id, n);
+    const second: PlacedElement = {
+      ...el,
+      id: crypto.randomUUID(),
+      name: `${template.name} ${String(n).padStart(2, "0")}`,
+      start: splitPoint.clone(),
+      end: el.end.clone(),
+      params: { ...el.params },
+      opening: null,
+      // sparingen verdelen op positie; xPos hermeten vanaf het nieuwe startpunt
+      openings: elementOpenings(el)
+        .filter((o) => o.xPos > along)
+        .map((o) => ({ ...o, xPos: o.xPos - along })),
+    };
+    el.openings = elementOpenings(el).filter((o) => o.xPos <= along);
+    el.opening = null;
+    el.end.copy(splitPoint);
+    // joins op het oude eindpunt verhuizen naar het tweede deel
+    for (const j of this.joins) {
+      if (j.aId === el.id && j.aEnd === "end") j.aId = second.id;
+      if (j.bId === el.id && j.bEnd === "end") j.bId = second.id;
+    }
+    this.elements.push(second);
+    this.rebuildAuthored();
+    this.refreshHandles();
+    this.emitElements();
+    this.setStatus(`${el.name} gesplitst op ${(along * 1000).toFixed(0)} mm.`);
+  }
+
+  // ------------------------------------------------------------------ v0.7-S4: openingen
+  /** Sparing toevoegen op een wereldpunt op het element (sparingstool). */
+  addOpeningAt(elementId: string, point: THREE.Vector3) {
+    const el = this.elements.find((e) => e.id === elementId);
+    if (!el) return;
+    const template = getTemplate(el.templateId);
+    const dx = el.end.x - el.start.x, dz = el.end.z - el.start.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-6) return;
+    const ux = dx / len, uz = dz / len;
+    const along = Math.max(0, Math.min(len, (point.x - el.start.x) * ux + (point.z - el.start.z) * uz));
+    this.pushUndo();
+    const isPlan = template.placementKind === "surface";
+    const opening: Opening = isPlan
+      ? {
+          id: crypto.randomUUID(), shape: "rect", kind: "vrij",
+          xPos: along,
+          yPos: -((point.x - el.start.x) * uz - (point.z - el.start.z) * ux),
+          breedte: 0.8, hoogte: 0.8,
+        }
+      : { id: crypto.randomUUID(), shape: "rect", kind: "vrij", xPos: along, breedte: 0.9, hoogte: 2.1, zBottom: 0 };
+    el.openings = [...elementOpenings(el), opening];
+    el.opening = null;
+    this.rebuildAuthored();
+    this.emitElements();
+    this.setStatus(`Sparing geplaatst op ${(along * 1000).toFixed(0)} mm — pas maat/vorm aan in het zijpaneel.`);
+  }
+
+  updateOpening(elementId: string, openingId: string, patch: Partial<Opening>) {
+    const el = this.elements.find((e) => e.id === elementId);
+    if (!el) return;
+    this.pushUndo(true);
+    el.openings = elementOpenings(el).map((o) => (o.id === openingId ? { ...o, ...patch } : o));
+    el.opening = null;
+    this.rebuildAuthored();
+    this.emitElements();
+  }
+
+  removeOpening(elementId: string, openingId: string) {
+    const el = this.elements.find((e) => e.id === elementId);
+    if (!el) return;
+    this.pushUndo();
+    el.openings = elementOpenings(el).filter((o) => o.id !== openingId);
+    el.opening = null;
+    this.rebuildAuthored();
+    this.emitElements();
+  }
+
+  // ------------------------------------------------------------------ v0.7-S5: typen
+  private static TYPE_LIBRARY_KEY = "o3s-type-library";
+
+  private mergeUserTypeLibrary() {
+    try {
+      const lib: TypeDefinition[] = JSON.parse(localStorage.getItem(Studio.TYPE_LIBRARY_KEY) ?? "[]");
+      for (const t of lib) {
+        if (this.types.some((x) => x.id === t.id)) continue;
+        try {
+          getTemplate(t.templateId);
+          this.types.push(t);
+        } catch {
+          /* template niet aanwezig in deze installatie */
+        }
+      }
+    } catch {
+      /* corrupte bibliotheek — negeren */
+    }
+  }
+
+  private persistUserTypeLibrary() {
+    try {
+      localStorage.setItem(Studio.TYPE_LIBRARY_KEY, JSON.stringify(this.types));
+    } catch {
+      /* localStorage vol — typen blijven wel in het project */
+    }
+  }
+
+  /** Maak een benoemd type van een element (of van de actieve teken-instellingen). */
+  saveAsType(name: string, fromElementId?: string): TypeDefinition {
+    const el = fromElementId ? this.elements.find((e) => e.id === fromElementId) : null;
+    const templateId = el?.templateId ?? this.activeTemplateId;
+    const params = { ...(el?.params ?? this.currentParams) };
+    delete (params as Record<string, unknown>).basisHoogte; // instantie-param, geen type-param
+    const type: TypeDefinition = { id: crypto.randomUUID(), name, templateId, typeParams: params };
+    this.types.push(type);
+    if (el) el.typeId = type.id;
+    this.persistUserTypeLibrary();
+    this.callbacks.onTypesChanged?.([...this.types]);
+    this.setStatus(`Type "${name}" opgeslagen.`);
+    return type;
+  }
+
+  duplicateType(typeId: string, newName: string): TypeDefinition | null {
+    const src = this.types.find((t) => t.id === typeId);
+    if (!src) return null;
+    const dup: TypeDefinition = {
+      id: crypto.randomUUID(),
+      name: newName,
+      templateId: src.templateId,
+      typeParams: { ...src.typeParams },
+    };
+    this.types.push(dup);
+    this.persistUserTypeLibrary();
+    this.callbacks.onTypesChanged?.([...this.types]);
+    return dup;
+  }
+
+  removeType(typeId: string) {
+    this.types = this.types.filter((t) => t.id !== typeId);
+    for (const el of this.elements) if (el.typeId === typeId) el.typeId = undefined;
+    this.persistUserTypeLibrary();
+    this.callbacks.onTypesChanged?.([...this.types]);
+  }
+
+  /** Pas een type toe op elementen (zelfde template vereist). */
+  applyType(typeId: string, elementIds: string[]): number {
+    const type = this.types.find((t) => t.id === typeId);
+    if (!type) return 0;
+    this.pushUndo();
+    let n = 0;
+    for (const id of elementIds) {
+      const el = this.elements.find((e) => e.id === id);
+      if (!el || el.templateId !== type.templateId) continue;
+      el.params = { ...el.params, ...type.typeParams };
+      el.typeId = type.id;
+      n++;
+    }
+    if (n > 0) {
+      this.rebuildAuthored();
+      this.emitElements();
+    }
+    this.setStatus(`Type "${type.name}" toegepast op ${n} element(en).`);
+    return n;
+  }
+
+  /** Wijzig type-parameters — werkt door op álle instanties van het type. */
+  updateType(typeId: string, typeParams: ParamValues): number {
+    const type = this.types.find((t) => t.id === typeId);
+    if (!type) return 0;
+    this.pushUndo();
+    type.typeParams = { ...typeParams };
+    let n = 0;
+    for (const el of this.elements) {
+      if (el.typeId !== typeId) continue;
+      el.params = { ...el.params, ...typeParams };
+      n++;
+    }
+    this.persistUserTypeLibrary();
+    this.callbacks.onTypesChanged?.([...this.types]);
+    if (n > 0) {
+      this.rebuildAuthored();
+      this.emitElements();
+    }
+    this.setStatus(`Type "${type.name}" bijgewerkt — ${n} instantie(s) volgen mee.`);
+    return n;
+  }
+
+  /** Activeer een type voor plaatsing: template + params volgen het type. */
+  setActiveType(typeId: string | null) {
+    this.activeTypeId = typeId;
+    if (!typeId) return;
+    const type = this.types.find((t) => t.id === typeId);
+    if (!type) return;
+    this.setActiveTemplate(type.templateId);
+    this.currentParams = { ...getTemplate(type.templateId).defaults, ...type.typeParams };
   }
 
   updateElementParams(id: string, params: ParamValues) {
@@ -1406,7 +2168,9 @@ export class Studio {
     const sin = Math.sin(angle);
     el.end.x = el.start.x + dx * cos + dz * sin;
     el.end.z = el.start.z - dx * sin + dz * cos;
+    this.resolveJoins(el.id);
     this.rebuildAuthored();
+    this.refreshHandles();
     this.emitElements();
     this.setStatus(`${el.name} gedraaid (${deltaDeg > 0 ? "+" : ""}${deltaDeg}°).`);
   }
@@ -1423,7 +2187,9 @@ export class Studio {
     const f = (lengthMm * MM) / current;
     el.end.x = el.start.x + dx * f;
     el.end.z = el.start.z + dz * f;
+    this.resolveJoins(el.id);
     this.rebuildAuthored();
+    this.refreshHandles();
     this.emitElements();
   }
 
@@ -1453,10 +2219,17 @@ export class Studio {
   removeElement(id: string) {
     this.pushUndo();
     this.elements = this.elements.filter((e) => e.id !== id);
-    if (this.selectedId === id) this.selectedId = null;
+    // gekoppelde host-sparingen (kozijn weg → gat dicht) en joins opruimen
+    for (const el of this.elements) {
+      if (el.openings) el.openings = el.openings.filter((o) => o.id !== id);
+    }
+    this.joins = this.joins.filter((j) => j.aId !== id && j.bId !== id);
+    this.selectedIds.delete(id);
+    if (this.selectedId === id) this.selectedId = [...this.selectedIds].pop() ?? null;
     this.rebuildAuthored();
+    this.refreshHandles();
     this.emitElements();
-    this.callbacks.onSelectionChanged?.(this.selectedId);
+    this.emitSelection();
   }
 
   private computeContentBox(): THREE.Box3 {
@@ -1501,6 +2274,30 @@ export class Studio {
       } catch {
         /* oudere browsers zonder pointer capture — negeren */
       }
+      // v0.7-S2: eind-handle aangeklikt? Die wint van element-drag.
+      if (this.tool === "select") {
+        const handleHit = this.raycastGroups(e, [this.handleGroup]);
+        const handleObj = handleHit?.object;
+        if (handleObj?.userData.handleFor) {
+          this.handleDrag = {
+            elementId: handleObj.userData.handleFor,
+            which: handleObj.userData.handleWhich,
+            moved: false,
+          };
+          this.world.camera.controls.enabled = false;
+          return;
+        }
+      }
+      // v0.7-S1: Shift+drag = venster-selectie
+      if (this.tool === "select" && e.shiftKey) {
+        const rect = dom.getBoundingClientRect();
+        this.marquee = {
+          x0: e.clientX - rect.left, y0: e.clientY - rect.top,
+          x1: e.clientX - rect.left, y1: e.clientY - rect.top,
+        };
+        this.world.camera.controls.enabled = false;
+        return;
+      }
       // verslepen: in selecteermodus met de muis op het geselecteerde element
       if (this.tool === "select" && this.selectedId) {
         const hit = this.raycastGroups(e, [this.authoredGroup]);
@@ -1526,12 +2323,46 @@ export class Studio {
       } catch {
         /* al vrijgegeven — negeren */
       }
+      // v0.7-S2: eind-handle losgelaten → auto-join proberen op de nieuwe positie
+      if (this.handleDrag) {
+        const drag = this.handleDrag;
+        this.handleDrag = null;
+        this.world.camera.controls.enabled = true;
+        this.pointerDownPos = null;
+        this.hideSnapMarker();
+        if (drag.moved) {
+          const el = this.elements.find((el) => el.id === drag.elementId);
+          if (el) {
+            this.unjoinEndpoint(el.id, drag.which);
+            this.autoJoinAt(el, drag.which);
+            this.resolveJoins(el.id);
+            this.rebuildAuthored();
+            this.refreshHandles();
+          }
+          this.emitElements();
+          this.setStatus("Eindpunt verplaatst.");
+        }
+        return;
+      }
+      // v0.7-S1: venster-selectie afronden
+      if (this.marquee) {
+        const m = this.marquee;
+        this.marquee = null;
+        if (this.marqueeDiv) this.marqueeDiv.style.display = "none";
+        this.world.camera.controls.enabled = true;
+        this.pointerDownPos = null;
+        this.finishMarquee(m, e.ctrlKey || e.metaKey);
+        return;
+      }
       if (this.dragging) {
         this.dragging = false;
         this.dragLast = null;
         this.world.camera.controls.enabled = true;
         this.pointerDownPos = null;
         if (this.dragMoved) {
+          if (this.selectedId) this.resolveJoins(this.selectedId);
+          this.rebuildAuthored();
+          this.refreshHandles();
           this.emitElements();
           this.setStatus("Element verplaatst.");
         }
@@ -1545,10 +2376,44 @@ export class Studio {
     });
 
     dom.addEventListener("pointermove", (e: PointerEvent) => {
+      // v0.7-S2: eind-handle slepen
+      if (this.handleDrag) {
+        const el = this.elements.find((el) => el.id === this.handleDrag!.elementId);
+        const raw = this.pickPointRaw(e, el?.start.y ?? 0);
+        if (el && raw) {
+          const snapped = this.snapToElements(raw, new Set([el.id]));
+          if (!this.handleDrag.moved) {
+            this.handleDrag.moved = true;
+            this.pushUndo();
+          }
+          const target = el[this.handleDrag.which];
+          target.x = snapped.x;
+          target.z = snapped.z;
+          this.rebuildAuthored();
+          this.refreshHandles();
+        }
+        return;
+      }
+      // v0.7-S1: venster-selectie tekenen
+      if (this.marquee) {
+        const rect = dom.getBoundingClientRect();
+        this.marquee.x1 = e.clientX - rect.left;
+        this.marquee.y1 = e.clientY - rect.top;
+        if (this.marqueeDiv) {
+          const { x0, y0, x1, y1 } = this.marquee;
+          this.marqueeDiv.style.display = "block";
+          this.marqueeDiv.style.left = `${Math.min(x0, x1)}px`;
+          this.marqueeDiv.style.top = `${Math.min(y0, y1)}px`;
+          this.marqueeDiv.style.width = `${Math.abs(x1 - x0)}px`;
+          this.marqueeDiv.style.height = `${Math.abs(y1 - y0)}px`;
+          // kruisend (rechts→links) = gestippeld amber, omsluitend = doorgetrokken
+          this.marqueeDiv.style.borderStyle = x1 < x0 ? "dashed" : "solid";
+        }
+        return;
+      }
       if (this.dragging && this.selectedId) {
-        const el = this.elements.find((el) => el.id === this.selectedId);
         const p = this.dragPoint(e);
-        if (el && p && this.dragLast) {
+        if (p && this.dragLast) {
           const delta = p.clone().sub(this.dragLast);
           delta.y = 0; // verslepen blijft op hetzelfde peil
           if (delta.lengthSq() > 0) {
@@ -1556,10 +2421,15 @@ export class Studio {
               this.dragMoved = true;
               this.pushUndo(); // NB: snapshot bevat de positie van vóór deze move
             }
-            el.start.add(delta);
-            el.end.add(delta);
+            // v0.7-S1: de héle selectie beweegt mee
+            for (const el of this.elements) {
+              if (!this.selectedIds.has(el.id)) continue;
+              el.start.add(delta);
+              el.end.add(delta);
+            }
             this.dragLast = p;
             this.rebuildAuthored();
+            this.refreshHandles();
           }
         }
         return;
@@ -1583,6 +2453,12 @@ export class Studio {
     });
 
     dom.addEventListener("contextmenu", (e: MouseEvent) => {
+      // v0.8: rechtsklik rondt de polygoon-sparing af (zoals de lijn-tool)
+      if (this.polyDraft) {
+        e.preventDefault();
+        this.commitPolyDraft();
+        return;
+      }
       if (this.isDrawingBusy()) {
         e.preventDefault();
         this.cancelDrawing();
@@ -1601,13 +2477,36 @@ export class Studio {
         !!target &&
         (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable);
       if (!inInput && (e.ctrlKey || e.metaKey)) {
-        if (e.key.toLowerCase() === "z" && !e.shiftKey) {
+        const k = e.key.toLowerCase();
+        if (k === "z" && !e.shiftKey) {
           e.preventDefault();
           this.undo();
-        } else if (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey)) {
+        } else if (k === "y" || (k === "z" && e.shiftKey)) {
           e.preventDefault();
           this.redo();
+        } else if (k === "c") {
+          // alleen als er echt een element-selectie is; anders normale tekst-copy
+          if (this.selectedIds.size > 0) {
+            e.preventDefault();
+            this.copySelection();
+          }
+        } else if (k === "x") {
+          if (this.selectedIds.size > 0) {
+            e.preventDefault();
+            this.cutSelection();
+          }
+        } else if (k === "v") {
+          e.preventDefault();
+          this.paste();
+        } else if (k === "a") {
+          e.preventDefault();
+          this.selectMany(this.elements.map((el) => el.id));
         }
+      }
+      // Delete/Backspace: selectie verwijderen
+      if (!inInput && (e.key === "Delete" || e.key === "Backspace") && this.selectedIds.size > 0) {
+        e.preventDefault();
+        this.removeSelected();
       }
     });
   }
@@ -1618,7 +2517,11 @@ export class Studio {
       this.lineStart ||
       this.rectStart ||
       this.circleCenter ||
-      this.measureStart
+      this.measureStart ||
+      this.polyDraft ||
+      this.matchSourceId ||
+      this.alignRefId ||
+      this.mirrorStart
     );
   }
 
@@ -1723,9 +2626,164 @@ export class Studio {
         if (point) this.placeSectionAt(point);
         break;
       }
+      // ---- v0.7 bewerken-gereedschappen ----
+      case "align": {
+        const id = this.elementIdAt(e);
+        if (!id) return;
+        if (!this.alignRefId) {
+          this.alignRefId = id;
+          this.setStatus("Referentie gekozen — klik nu het element dat uitgelijnd moet worden.");
+        } else {
+          this.alignToElement(this.alignRefId, id);
+          this.alignRefId = null;
+        }
+        break;
+      }
+      case "mirror": {
+        const point = this.pickPoint(e);
+        if (!point) return;
+        if (this.selectedIds.size === 0) {
+          this.setStatus("Spiegelen: selecteer eerst elementen (wissel naar Selecteren).");
+          return;
+        }
+        if (!this.mirrorStart) {
+          this.mirrorStart = point.clone();
+          this.setStatus("Klik het tweede punt van de spiegelas.");
+        } else {
+          this.mirrorSelection(this.mirrorStart, point, true);
+          this.mirrorStart = null;
+        }
+        break;
+      }
+      case "split": {
+        const id = this.elementIdAt(e);
+        const point = this.pickPoint(e);
+        if (id && point) this.splitElementAt(id, point);
+        break;
+      }
+      case "opening": {
+        const id = this.elementIdAt(e);
+        const point = this.pickPoint(e);
+        if (id && point) this.addOpeningAt(id, point);
+        else this.setStatus("Sparing: klik óp een element.");
+        break;
+      }
+      case "opening-poly": {
+        const id = this.elementIdAt(e);
+        const hit = this.raycastGroups(e, [this.authoredGroup]);
+        if (!id || !hit) {
+          this.setStatus("Polygoon-sparing: klik óp een element.");
+          return;
+        }
+        if (this.polyDraft && this.polyDraft.elementId !== id) {
+          this.setStatus("Alle hoekpunten moeten op hetzelfde element liggen (rechtsklik rondt af).");
+          return;
+        }
+        const el = this.elements.find((el) => el.id === id);
+        if (!el) return;
+        const local = this.toElementLocal(el, hit.point);
+        if (!local) return;
+        if (!this.polyDraft) this.polyDraft = { elementId: id, points: [] };
+        this.polyDraft.points.push(local);
+        this.setStatus(
+          `Polygoon-sparing: ${this.polyDraft.points.length} punt(en) — klik het volgende hoekpunt, rechtsklik rondt af (min. 3).`,
+        );
+        break;
+      }
+      case "match": {
+        const id = this.elementIdAt(e);
+        if (!id) return;
+        if (!this.matchSourceId) {
+          this.matchSourceId = id;
+          const src = this.elements.find((el) => el.id === id);
+          this.setStatus(`Bron: ${src?.name ?? id} — klik nu de doel-elementen (Esc stopt).`);
+        } else {
+          this.matchProperties(this.matchSourceId, id);
+        }
+        break;
+      }
       default:
         void this.handleSelectClick(e);
     }
+  }
+
+  /** Wereldpunt → element-lokale [langs-as, hoogte]-coördinaten (voor polygoon-sparing).
+   *  Bij vlak-elementen: [langs-as, dwars]. */
+  private toElementLocal(el: PlacedElement, world: THREE.Vector3): [number, number] | null {
+    const dx = el.end.x - el.start.x, dz = el.end.z - el.start.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-6) return null;
+    const ux = dx / len, uz = dz / len;
+    const rx = world.x - el.start.x, rz = world.z - el.start.z;
+    const along = rx * ux + rz * uz;
+    const template = getTemplate(el.templateId);
+    if (template.placementKind === "surface") {
+      const across = -(rx * uz - rz * ux);
+      return [along, across];
+    }
+    const basis = typeof el.params.basisHoogte === "number" ? el.params.basisHoogte / 1000 : 0;
+    const height = world.y - (el.start.y + basis);
+    return [along, Math.max(0, height)];
+  }
+
+  /** v0.8: eigenschappen overnemen (penseel) — type-parameters + typeId van bron naar doel. */
+  private matchProperties(sourceId: string, targetId: string) {
+    const src = this.elements.find((el) => el.id === sourceId);
+    const dst = this.elements.find((el) => el.id === targetId);
+    if (!src || !dst || sourceId === targetId) return;
+    if (src.templateId !== dst.templateId) {
+      this.setStatus("Eigenschappen overnemen kan alleen tussen elementen van hetzelfde template.");
+      return;
+    }
+    this.pushUndo();
+    const basis = dst.params.basisHoogte; // instantie-param behouden
+    dst.params = { ...src.params };
+    if (basis !== undefined) dst.params.basisHoogte = basis;
+    dst.typeId = src.typeId;
+    this.rebuildAuthored();
+    this.emitElements();
+    this.setStatus(`Eigenschappen van ${src.name} overgenomen op ${dst.name} — klik een volgend doel of druk Esc.`);
+  }
+
+  /** Rond de polygoon-sparing af (rechtsklik) of annuleer hem (Esc). */
+  private commitPolyDraft() {
+    const draft = this.polyDraft;
+    this.polyDraft = null;
+    if (!draft || draft.points.length < 3) {
+      if (draft) this.setStatus("Polygoon-sparing geannuleerd (minder dan 3 punten).");
+      return;
+    }
+    const el = this.elements.find((e) => e.id === draft.elementId);
+    if (!el) return;
+    this.pushUndo();
+    const xs = draft.points.map((p) => p[0]);
+    const ys = draft.points.map((p) => p[1]);
+    el.openings = [
+      ...elementOpenings(el),
+      {
+        id: crypto.randomUUID(),
+        shape: "poly",
+        kind: "vrij",
+        points: draft.points,
+        // envelope-velden meegeven voor merken/IFC-fallback
+        xPos: (Math.min(...xs) + Math.max(...xs)) / 2,
+        breedte: Math.max(...xs) - Math.min(...xs),
+        hoogte: Math.max(...ys) - Math.min(...ys),
+        zBottom: Math.min(...ys),
+      },
+    ];
+    el.opening = null;
+    this.rebuildAuthored();
+    this.emitElements();
+    this.setStatus(`Polygoon-sparing geplaatst (${draft.points.length} hoekpunten).`);
+  }
+
+  /** Element-id onder de cursor (alleen zelfgetekende elementen). */
+  private elementIdAt(e: PointerEvent): string | null {
+    const hit = this.raycastGroups(e, [this.authoredGroup]);
+    let obj: THREE.Object3D | null = hit?.object ?? null;
+    while (obj && !obj.userData.elementId) obj = obj.parent;
+    return obj?.userData.elementId ?? null;
   }
 
   /** Basisvectoren van het actieve tekenvlak (afhankelijk van het 2D-aanzicht). */
@@ -1799,10 +2857,13 @@ export class Studio {
       while (obj && !obj.userData.elementId) obj = obj.parent;
       if (obj?.userData.elementId) {
         await this.clearFragmentSelection();
-        this.selectElement(obj.userData.elementId);
+        // v0.7-S1: Ctrl-klik voegt toe aan / haalt uit de selectie
+        this.selectElement(obj.userData.elementId, { additive: e.ctrlKey || e.metaKey });
         return;
       }
     }
+    // Ctrl-klik in de leegte laat de selectie intact (CAD-conventie)
+    if (e.ctrlKey || e.metaKey) return;
 
     // 2. Geladen IFC-fragment? Async raycast via de fragments-native API
     //    (@thatopen/fragments 3.4.6 — model.raycast + model.highlight).
@@ -1866,6 +2927,51 @@ export class Studio {
     }
   }
 
+  /** Punt op een horizontaal vlak op hoogte `y` (voor handle-drag), met raster-snap. */
+  private pickPointRaw(e: PointerEvent, y: number): THREE.Vector3 | null {
+    const ray = this.currentRay(e);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -y);
+    const out = new THREE.Vector3();
+    if (!ray.intersectPlane(plane, out)) return null;
+    out.x = Math.round(out.x / SNAP) * SNAP;
+    out.z = Math.round(out.z / SNAP) * SNAP;
+    return this.snapToGrid(out);
+  }
+
+  /** Venster-selectie afronden: L→R = volledig binnen venster, R→L = kruisend. */
+  private finishMarquee(m: { x0: number; y0: number; x1: number; y1: number }, additive: boolean) {
+    const dom: HTMLElement = this.world.renderer.three.domElement;
+    const rect = dom.getBoundingClientRect();
+    const camera = this.world.camera.three;
+    const minX = Math.min(m.x0, m.x1), maxX = Math.max(m.x0, m.x1);
+    const minY = Math.min(m.y0, m.y1), maxY = Math.max(m.y0, m.y1);
+    if (maxX - minX < 4 && maxY - minY < 4) return; // te klein: was gewoon een klik
+    const crossing = m.x1 < m.x0;
+    const toScreen = (p: THREE.Vector3): { x: number; y: number } | null => {
+      const ndc = p.clone().project(camera);
+      if (ndc.z > 1) return null; // achter de camera
+      return { x: ((ndc.x + 1) / 2) * rect.width, y: ((1 - ndc.y) / 2) * rect.height };
+    };
+    const inside = (s: { x: number; y: number } | null) =>
+      !!s && s.x >= minX && s.x <= maxX && s.y >= minY && s.y <= maxY;
+    const ids: string[] = [];
+    for (const el of this.elements) {
+      const a = toScreen(el.start);
+      const b = toScreen(el.end);
+      const hit = crossing ? inside(a) || inside(b) : inside(a) && inside(b);
+      if (hit) ids.push(el.id);
+    }
+    this.selectMany(ids, { additive });
+    this.setStatus(`${ids.length} element(en) ${crossing ? "kruisend " : ""}geselecteerd.`);
+  }
+
+  /** Verbreek joins op één specifiek eindpunt (voor her-joinen na handle-drag). */
+  private unjoinEndpoint(elementId: string, which: "start" | "end") {
+    this.joins = this.joins.filter(
+      (j) => !(j.aId === elementId && j.aEnd === which) && !(j.bId === elementId && j.bEnd === which),
+    );
+  }
+
   /** Sleeppunt: altijd op het horizontale vlak van het element zelf, zodat de
    *  straal niet op het versleepte element raycast (parallaxsprongen). */
   private dragPoint(e: PointerEvent): THREE.Vector3 | null {
@@ -1918,7 +3024,8 @@ export class Studio {
     // alleen x/z snappen: y (peil) komt exact van het tekenvlak of het geraakte oppervlak
     point.x = Math.round(point.x / SNAP) * SNAP;
     point.z = Math.round(point.z / SNAP) * SNAP;
-    return this.snapToGrid(point);
+    // v0.7-S2: element-snap (endpoints/midpoints) wint van raster/stramien
+    return this.snapToElements(this.snapToGrid(point));
   }
 
   private currentRay(e: PointerEvent): THREE.Ray {
@@ -1975,14 +3082,14 @@ export class Studio {
       phaseWireframe?: boolean;
     } = {},
     templateId = this.activeTemplateId,
-    opening: Opening | null = null,
+    openings: Opening | Opening[] | null = null,
   ): THREE.Group | null {
     const template = getTemplate(templateId);
     const dx = end.x - start.x;
     const dz = end.z - start.z;
     const length = Math.hypot(dx, dz);
     if (length < 0.05) return null;
-    const group = buildElementGroup(template, length, params, opts, opening);
+    const group = buildElementGroup(template, length, params, opts, openings);
     const basis = typeof params.basisHoogte === "number" ? params.basisHoogte : 0;
     group.position.set(start.x, start.y + basis * MM, start.z);
     group.rotation.y = Math.atan2(-dz, dx);
@@ -2009,21 +3116,67 @@ export class Studio {
       params: { ...this.currentParams },
       storeyId: this.activeStoreyId,
       opening: null,
+      openings: [],
       phase: "new",
+      // v0.7-S5: plaatsing onder een actief type registreert de instantie
+      typeId:
+        this.activeTypeId && this.types.find((t) => t.id === this.activeTypeId)?.templateId === template.id
+          ? this.activeTypeId
+          : undefined,
     };
     // Hosting-relatie: bij deuren/ramen zoeken we de wand-onder-cursor en
-    // koppelen die als host (PlacedElement.hostId). Zonder host wordt het
-    // gewoon een los kozijn — bruikbaar tot de host-flow volledig is uitgerold.
+    // koppelen die als host (PlacedElement.hostId). v0.7-S4: de host krijgt
+    // meteen een gekoppelde sparing (id = kozijn-id) op kozijnmaat.
     if (template.ifcEntity === "IfcDoor" || template.ifcEntity === "IfcWindow") {
       const hostId = this.findHostAt(start.clone().lerp(end, 0.5));
-      if (hostId) el.hostId = hostId;
+      if (hostId) {
+        el.hostId = hostId;
+        const host = this.elements.find((h) => h.id === hostId);
+        if (host) {
+          const solids = template.solids(Math.max(length, 0.1), el.params);
+          let w = 0, h = 0;
+          for (const s of solids) {
+            w = Math.max(w, s.cx + s.dx / 2);
+            h = Math.max(h, s.zBottom + s.dz);
+          }
+          // positie van het kozijn-midden geprojecteerd op de host-as
+          const hdx = host.end.x - host.start.x, hdz = host.end.z - host.start.z;
+          const hlen = Math.hypot(hdx, hdz);
+          if (hlen > 1e-6 && w > 0.05 && h > 0.05) {
+            const ux = hdx / hlen, uz = hdz / hlen;
+            const mid = start.clone().lerp(end, 0.5);
+            const along = (mid.x - host.start.x) * ux + (mid.z - host.start.z) * uz;
+            host.openings = [
+              ...elementOpenings(host),
+              {
+                id: el.id, // koppeling: sparing verdwijnt mee met het kozijn
+                shape: "rect",
+                kind: template.ifcEntity === "IfcDoor" ? "deur" : "raam",
+                xPos: Math.max(0, Math.min(hlen, along)),
+                breedte: w,
+                hoogte: h,
+                zBottom: 0,
+              },
+            ];
+            host.opening = null;
+          }
+        }
+      }
     }
     this.elements.push(el);
+    // v0.7-S3: lijnelementen joinen automatisch op eindpunt/lijf van buren;
+    // v0.8: direct de hoekaansluiting (butt joint) doorrekenen
+    if (template.placementKind !== "point" && template.placementKind !== "surface") {
+      this.autoJoinAt(el, "start");
+      this.autoJoinAt(el, "end");
+      this.resolveJoins(el.id);
+    }
     this.drawStart = null;
     this.lastMovePoint = null;
+    this.hideSnapMarker();
     this.rebuildAuthored();
     this.emitElements();
-    const suffix = el.hostId ? " (gekoppeld aan host-wand)" : "";
+    const suffix = el.hostId ? " (gekoppeld aan host-wand, sparing gemaakt)" : "";
     const lm = template.placementKind === "point" ? "punt" : `${(length * 1000).toFixed(0)} mm`;
     this.setStatus(`${el.name} geplaatst (${lm})${suffix}. Klik opnieuw of druk Esc.`);
   }
@@ -2057,6 +3210,11 @@ export class Studio {
     this.circleCenter = null;
     this.measureStart = null;
     this.lastMovePoint = null;
+    this.alignRefId = null;
+    this.mirrorStart = null;
+    this.polyDraft = null;
+    this.matchSourceId = null;
+    this.hideSnapMarker();
     if (this.previewGroup) {
       this.authoredGroup.remove(this.previewGroup);
       disposeGroup(this.previewGroup);
@@ -2073,6 +3231,9 @@ export class Studio {
     }
     for (const el of this.elements) {
       const template = getTemplate(el.templateId);
+      // v0.7-S6: laag = hoofdcategorie; subcategorie-string blijft werken als
+      // iemand die nog in de map heeft staan (oude projecten/instellingen).
+      if (this.layerVisibility.get(deriveMainCategory(template)) === false) continue;
       if (this.layerVisibility.get(template.category) === false) continue;
       const phase = el.phase ?? "new";
       if (!this.phaseSettings.visible[phase]) continue;
@@ -2082,13 +3243,13 @@ export class Studio {
         el.end,
         el.params,
         {
-          selected: el.id === this.selectedId,
+          selected: this.selectedIds.has(el.id),
           phaseColor: overrideColor && phase !== "new" ? overrideColor : undefined,
           phaseOpacity: this.phaseSettings.opacity[phase],
           phaseWireframe: this.phaseSettings.wireframe[phase],
         },
         el.templateId,
-        el.opening ?? null,
+        elementOpenings(el),
       );
       if (group) {
         group.userData.elementId = el.id;
@@ -2193,14 +3354,17 @@ export class Studio {
         template.ifcEntity === "IfcBeam" ? "B" : template.ifcEntity === "IfcPlate" ? "P" : "W";
       const len = Math.round(Math.hypot(el.end.x - el.start.x, el.end.z - el.start.z) * 1000);
       const { basisHoogte: _basis, ...typeParams } = el.params as Record<string, unknown>;
-      // sparing tekenrichting-onafhankelijk maken: positie vanaf het dichtstbijzijnde uiteinde
-      const opKey = el.opening
-        ? {
-            b: Math.round(el.opening.breedte * 1000),
-            h: Math.round(el.opening.hoogte * 1000),
-            x: Math.round(Math.min(el.opening.xPos, len / 1000 - el.opening.xPos) * 1000),
-          }
-        : null;
+      // sparingen tekenrichting-onafhankelijk maken: positie vanaf het dichtstbijzijnde
+      // uiteinde, gesorteerd zodat de volgorde niet meetelt
+      const opKey = elementOpenings(el)
+        .map((op) => ({
+          s: op.shape ?? "rect",
+          b: Math.round(op.breedte * 1000),
+          h: Math.round(op.hoogte * 1000),
+          z: Math.round((op.zBottom ?? 0) * 1000),
+          x: Math.round(Math.min(op.xPos, len / 1000 - op.xPos) * 1000),
+        }))
+        .sort((a, b) => a.x - b.x || a.b - b.b);
       const key = [el.templateId, len, JSON.stringify(typeParams), JSON.stringify(opKey)].join("|");
       let merk = groups.get(key);
       if (!merk) {

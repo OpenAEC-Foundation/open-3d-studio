@@ -139,8 +139,11 @@ export type ElementPhase = "existing" | "new" | "demolished" | "temporary";
 export interface ComponentTemplate {
   id: string;
   name: string;
-  /** categorie = laag in het lagenpaneel */
+  /** subcategorie (weergavenaam); de laag in het lagenpaneel is de hoofdcategorie (v0.7-S6) */
   category: string;
+  /** hoofdcategorie-override (v0.7-S6). Ontbreekt: afgeleid uit NL-SfB/category —
+   *  zie `deriveMainCategory` in src/core/mainCategory.ts. */
+  mainCategory?: string;
   manufacturer?: string;
   /** NL-SfB-code (BIM basis ILS) — kan blijven naast bSDD-classification hieronder */
   nlSfb?: string;
@@ -197,13 +200,50 @@ export interface ComponentTemplate {
   commonPset?(length: number, p: ParamValues): Record<string, string | number | boolean>;
 }
 
-/** Sparing (opening) in een wandvormig element, in wand-lokale coördinaten (meters). */
+/** Sparing (opening) in een element, in element-lokale coördinaten (meters).
+ *  v0.7: meerdere per element, rechthoekig of rond, ook in vloeren/daken. */
 export interface Opening {
-  /** afstand van het startpunt tot het midden van de sparing, langs de wandas */
+  /** uniek id (v0.7) — bij kozijn-gekoppelde sparingen het element-id van het kozijn */
+  id?: string;
+  /** rechthoekig (default), rond of vrije polygoon; rond/poly worden benaderd
+   *  met strips (geen CSG-dependency) */
+  shape?: "rect" | "round" | "poly";
+  /** hoekpunten voor shape "poly": [langs-as, hoogte]-paren in meters
+   *  (bij vlak-elementen: [langs-as, dwars]-paren). Overrulet xPos/breedte/hoogte. */
+  points?: [number, number][];
+  /** afstand van het startpunt tot het midden van de sparing, langs de as */
   xPos: number;
+  /** dwars-positie t.o.v. de as (alleen zinvol bij vlak-elementen: vloer/dak) */
+  yPos?: number;
+  /** breedte; bij shape "round" de diameter */
   breedte: number;
-  /** hoogte van de sparing vanaf de onderkant van het element */
+  /** hoogte van de sparing; bij vlak-elementen genegeerd (gat gaat door de plaat) */
   hoogte: number;
+  /** onderkant van de sparing boven element-onderkant (default 0) */
+  zBottom?: number;
+  /** betekenis — stuurt weergave en koppeling (kozijn maakt raam/deur-sparing) */
+  kind?: "raam" | "deur" | "leiding" | "vrij";
+}
+
+/** Verbinding tussen twee lijnvormige elementen (v0.7-S3).
+ *  L-verbinding: eindpunt-op-eindpunt; T-verbinding: eindpunt-op-lijf (bEnd "path").
+ *  De verbinding is een relatie die meebeweegt — geometrie wordt afgeleid.
+ *  Exporteert naar IfcRelConnectsPathElements (ATSTART/ATEND/ATPATH). */
+export interface ElementJoin {
+  id: string;
+  aId: string;
+  aEnd: "start" | "end";
+  bId: string;
+  bEnd: "start" | "end" | "path";
+}
+
+/** Benoemd type: een template met vastgezette type-parameters (v0.7-S5).
+ *  Vergelijkbaar met een Revit-type; instanties verwijzen via PlacedElement.typeId. */
+export interface TypeDefinition {
+  id: string;
+  name: string;
+  templateId: string;
+  typeParams: ParamValues;
 }
 
 /** Een geplaatst element in het model (start/eind in three.js-wereldcoördinaten, meters, y = omhoog). */
@@ -216,10 +256,14 @@ export interface PlacedElement {
   params: ParamValues;
   /** verdieping waarop het element hoort (IfcBuildingStorey) */
   storeyId?: string;
-  /** optionele sparing */
+  /** @deprecated v0.7 — gebruik `openings`. Alleen nog gelezen voor migratie. */
   opening?: Opening | null;
+  /** sparingen (v0.7: meerdere per element) */
+  openings?: Opening[];
   /** merk-/posnummer (automatisch, identieke elementen delen een merk) */
   merk?: string;
+  /** benoemd type waar dit element een instantie van is (v0.7-S5) */
+  typeId?: string;
 
   // ------- v0.4-S1: host/space/phase -------
 

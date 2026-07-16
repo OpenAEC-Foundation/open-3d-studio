@@ -1,6 +1,6 @@
-import type { ComponentTemplate, PlacedElement, SolidBox } from "./types";
+import type { ComponentTemplate, Opening, PlacedElement, SolidBox } from "./types";
 import { getTemplate } from "../catalog/registry";
-import { elementSolids } from "./meshBuilder";
+import { elementOpenings, elementSolids } from "./meshBuilder";
 
 /** Elementeren (HSBcad-principe): een wandvormig element opdelen in
  *  productiepanelen met een maximale breedte, met per paneel een zaag-/stuklijst. */
@@ -49,26 +49,29 @@ export function elementeer(el: PlacedElement, maxPaneelbreedteMm: number): Eleme
   const paneelBreedte = totale / aantalPanelen;
 
   const panelen: Paneel[] = [];
+  const alleOpeningen = elementOpenings(el);
   for (let i = 0; i < aantalPanelen; i++) {
-    // sparing per paneel: het overlappende deel van de sparing wordt op elk
+    // sparingen per paneel: het overlappende deel van elke sparing wordt op elk
     // betrokken paneel toegepast (geknipt op de paneelgrenzen)
     const van = i * paneelBreedte;
     const tot = van + paneelBreedte;
-    let opening: typeof el.opening = null;
-    if (el.opening) {
-      const opVan = el.opening.xPos - el.opening.breedte / 2;
-      const opTot = el.opening.xPos + el.opening.breedte / 2;
+    const paneelOpeningen: Opening[] = [];
+    for (const op of alleOpeningen) {
+      const opVan = op.xPos - op.breedte / 2;
+      const opTot = op.xPos + op.breedte / 2;
       const overlapVan = Math.max(opVan, van);
       const overlapTot = Math.min(opTot, tot);
       if (overlapTot - overlapVan > 0.001) {
-        opening = {
+        paneelOpeningen.push({
+          ...op,
           xPos: (overlapVan + overlapTot) / 2 - van,
           breedte: overlapTot - overlapVan,
-          hoogte: el.opening.hoogte,
-        };
+          // ronde sparing die op de paneelgrens is geknipt is niet meer rond
+          shape: overlapTot - overlapVan < op.breedte - 0.001 ? "rect" : op.shape,
+        });
       }
     }
-    const solids = elementSolids(template, paneelBreedte, el.params, opening);
+    const solids = elementSolids(template, paneelBreedte, el.params, paneelOpeningen);
     panelen.push({
       nummer: `${el.merk ?? "E"}-${String(i + 1).padStart(2, "0")}`,
       breedteMm: Math.round(paneelBreedte * 1000),

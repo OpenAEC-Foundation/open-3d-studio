@@ -22,11 +22,11 @@ export const staalframeSfs: ComponentTemplate = {
 
   placementKind: "linear",
   materialLayers: [
-    { material: "Gipsvezelplaat", thicknessMm: 15, category: "finish" },
-    { material: "Staal, C-profielen + minerale wol", thicknessMm: 150, category: "structure", loadBearing: true },
-    { material: "Windvast plaatmateriaal", thicknessMm: 12, category: "structure" },
-    { material: "Isolatie (buitenzijde)", thicknessMm: 60, category: "insulation" },
-    { material: "Gevelplaat", thicknessMm: 18, category: "cladding" },
+    { material: "Gipsvezelplaat", thicknessMm: 15, category: "finish", lambda: 0.25 },
+    { material: "Staal, C-profielen + minerale wol", thicknessMm: 150, category: "structure", loadBearing: true, lambda: 0.035 },
+    { material: "Windvast plaatmateriaal", thicknessMm: 12, category: "structure", lambda: 0.13 },
+    { material: "Isolatie (buitenzijde)", thicknessMm: 60, category: "insulation", lambda: 0.035 },
+    { material: "Gevelplaat", thicknessMm: 18, category: "cladding", lambda: 0.13 },
   ],
 
   ifcEntity: "IfcWall",

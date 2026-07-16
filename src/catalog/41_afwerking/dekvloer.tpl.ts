@@ -18,8 +18,8 @@ export const dekvloer: ComponentTemplate = {
 
   placementKind: "surface",
   materialLayers: [
-    { material: "PIR-isolatie", thicknessMm: 40, category: "insulation" },
-    { material: "Cementdekvloer", thicknessMm: 60, category: "finish" },
+    { material: "PIR-isolatie", thicknessMm: 40, category: "insulation", lambda: 0.023 },
+    { material: "Cementdekvloer", thicknessMm: 60, category: "finish", lambda: 1.4 },
   ],
 
   ifcEntity: "IfcCovering",

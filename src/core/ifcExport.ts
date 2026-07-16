@@ -1,27 +1,13 @@
 import * as WebIFC from "web-ifc";
-import type { GridConfig, PlacedElement, ProjectOrigin, Storey } from "./types";
+import type { ElementJoin, GridConfig, PlacedElement, ProjectOrigin, Storey, TypeDefinition } from "./types";
 import { getTemplate } from "../catalog/registry";
-import { elementSolids } from "./meshBuilder";
+import { elementOpenings, elementSolids } from "./meshBuilder";
 import { entityMakers, makeCommonProps } from "./ifcEntityMap";
 import { commonPsetFor } from "./psetFactories";
 import { materialThermalProps, thermalPsetProps } from "./thermal";
+import { getIfcApi, newIfcGuid } from "./ifcCommon";
 
 const { IFC4 } = WebIFC;
-
-/** IFC-GUID: 128 bits gecodeerd als 22 tekens in het IFC-base64-alfabet. */
-const GUID_CHARS =
-  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
-
-function newIfcGuid(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  let num = 0n;
-  for (const b of bytes) num = (num << 8n) | BigInt(b);
-  let out = GUID_CHARS[Number(num >> 126n)];
-  for (let i = 20; i >= 0; i--) {
-    out += GUID_CHARS[Number((num >> BigInt(i * 6)) & 63n)];
-  }
-  return out;
-}
 
 const MM = 0.001;
 
@@ -38,6 +24,10 @@ export async function exportElementsToIfc(
     grid?: GridConfig;
     /** RD-georeferentie (EPSG:28992), meters */
     geoRef?: { rdX: number; rdY: number; napZ: number };
+    /** v0.7-S3: verbindingen → IfcRelConnectsPathElements */
+    joins?: ElementJoin[];
+    /** v0.7-S5: benoemde typen → IfcType-namen */
+    types?: TypeDefinition[];
   } = {},
 ): Promise<Uint8Array> {
   const projectName = opts.projectName ?? "Open 3D Studio — Storax componenten";
@@ -46,9 +36,7 @@ export async function exportElementsToIfc(
     opts.storeys && opts.storeys.length > 0
       ? [...opts.storeys].sort((a, b) => a.elevation - b.elevation)
       : [{ id: "storey-0", name: "00 begane grond", elevation: 0 }];
-  const api = new WebIFC.IfcAPI();
-  api.SetWasmPath("/wasm/", true);
-  await api.Init();
+  const api = await getIfcApi();
 
   const modelID = api.CreateModel({
     schema: WebIFC.Schemas.IFC4,
@@ -260,10 +248,10 @@ export async function exportElementsToIfc(
       ),
     );
 
-    // geometrie: dezelfde solids-definitie als de 3D-weergave (incl. sparing)
+    // geometrie: dezelfde solids-definitie als de 3D-weergave (incl. sparingen)
     const items: InstanceType<typeof IFC4.IfcExtrudedAreaSolid>[] = [];
     const colorHex = template.color(el.params);
-    const solids = elementSolids(template, length, el.params, el.opening);
+    const solids = elementSolids(template, length, el.params, elementOpenings(el));
     for (const s of solids) {
       const profile = new IFC4.IfcRectangleProfileDef(
         IFC4.IfcProfileTypeEnum.AREA,
@@ -314,38 +302,70 @@ export async function exportElementsToIfc(
     const storeyKey = el.storeyId && storeyMap.has(el.storeyId) ? el.storeyId : storeys[0].id;
     byStorey.set(storeyKey, [...(byStorey.get(storeyKey) ?? []), product]);
 
-    // type-groepering (IfcTypes): zelfde template + zelfde type-parameters = zelfde type
+    // type-groepering (IfcTypes): benoemd type (v0.7-S5) wint; anders zelfde
+    // template + zelfde type-parameters = zelfde impliciete type
     const { basisHoogte: _b, ...typeParams } = el.params as Record<string, unknown>;
-    const typeKey = `${el.templateId}|${JSON.stringify(typeParams)}`;
+    const typeKey = el.typeId ?? `${el.templateId}|${JSON.stringify(typeParams)}`;
     const typeGroup = byType.get(typeKey) ?? { products: [], template, merk: el.merk ?? "" };
     typeGroup.products.push(product);
     if (el.merk) typeGroup.merk = el.merk;
     byType.set(typeKey, typeGroup);
 
-    // sparing als IfcOpeningElement (geometrie is al doorgesneden; semantiek conform ILS)
-    if (el.opening) {
-      const op = el.opening;
+    // sparingen als IfcOpeningElement (geometrie is al doorgesneden; semantiek conform ILS)
+    for (const op of elementOpenings(el)) {
       const depth = template.depth(el.params) + 0.02;
+      const zB = op.zBottom ?? 0;
       const openingPlacement = new IFC4.IfcLocalPlacement(
         productPlacement,
-        new IFC4.IfcAxis2Placement3D(pt3(op.xPos, 0, 0), null, null),
+        new IFC4.IfcAxis2Placement3D(pt3(op.xPos, op.yPos ?? 0, zB), null, null),
       );
-      const openingSolid = new IFC4.IfcExtrudedAreaSolid(
-        new IFC4.IfcRectangleProfileDef(
+      // rond gat: cilinder-profiel; polygoon (v0.8): arbitrary closed profile
+      // in het opstaande vlak, geëxtrudeerd door de dikte; rechthoek: rechthoek.
+      let openingSolid: InstanceType<typeof IFC4.IfcExtrudedAreaSolid>;
+      if (op.shape === "poly" && op.points && op.points.length >= 3) {
+        const profile = new IFC4.IfcArbitraryClosedProfileDef(
           IFC4.IfcProfileTypeEnum.AREA,
           null,
-          new IFC4.IfcAxis2Placement2D(pt2(0, 0), null),
-          plen(op.breedte),
+          new IFC4.IfcPolyline([
+            ...op.points.map(([x, z]) => pt2(x - op.xPos, z - (op.zBottom ?? 0))),
+            pt2(op.points[0][0] - op.xPos, op.points[0][1] - (op.zBottom ?? 0)),
+          ]),
+        );
+        // profiel staat in het x-z-vlak → extruderen in y (door de dikte):
+        // plaatsing gekanteld met as = Y, refDirection = X
+        openingSolid = new IFC4.IfcExtrudedAreaSolid(
+          profile,
+          new IFC4.IfcAxis2Placement3D(pt3(0, -depth / 2, 0), dir3(0, -1, 0), dir3(1, 0, 0)),
+          dir3(0, 0, 1),
           plen(depth),
-        ),
-        new IFC4.IfcAxis2Placement3D(pt3(0, 0, 0), null, null),
-        dir3(0, 0, 1),
-        plen(op.hoogte),
-      );
+        );
+      } else {
+        const profile =
+          op.shape === "round"
+            ? new IFC4.IfcCircleProfileDef(
+                IFC4.IfcProfileTypeEnum.AREA,
+                null,
+                new IFC4.IfcAxis2Placement2D(pt2(0, 0), null),
+                plen(op.breedte / 2),
+              )
+            : new IFC4.IfcRectangleProfileDef(
+                IFC4.IfcProfileTypeEnum.AREA,
+                null,
+                new IFC4.IfcAxis2Placement2D(pt2(0, 0), null),
+                plen(op.breedte),
+                plen(depth),
+              );
+        openingSolid = new IFC4.IfcExtrudedAreaSolid(
+          profile,
+          new IFC4.IfcAxis2Placement3D(pt3(0, 0, 0), null, null),
+          dir3(0, 0, 1),
+          plen(op.shape === "round" ? op.breedte : op.hoogte),
+        );
+      }
       const openingElement = new IFC4.IfcOpeningElement(
         guid(),
         ownerHistory,
-        label(`Sparing ${el.name}`),
+        label(`Sparing ${el.name}${op.kind ? ` (${op.kind})` : ""}`),
         null,
         null,
         openingPlacement,
@@ -383,9 +403,10 @@ export async function exportElementsToIfc(
       // naam + peil zodat heropenen de verdiepingsindeling kan herstellen
       storeyName: o3sStorey?.name,
       storeyElevation: o3sStorey?.elevation,
-      opening: el.opening ?? null,
+      openings: elementOpenings(el),
       phase: el.phase ?? "new",
       hostId: el.hostId ?? null,
+      typeId: el.typeId ?? null,
     });
     const props = [
       ...Object.entries(template.psetProps(length, el.params)).map(
@@ -671,7 +692,7 @@ export async function exportElementsToIfc(
     if (!filling || !host || !hostTemplate) continue;
 
     // Opening in de host-wand: rechthoekige uitsparing met kozijn-envelope-maten.
-    const solids = elementSolids(template, 1, el.params, el.opening);
+    const solids = elementSolids(template, 1, el.params, elementOpenings(el));
     let width = 0, height = 0;
     for (const s of solids) {
       width = Math.max(width, s.dx);
@@ -747,17 +768,24 @@ export async function exportElementsToIfc(
     );
   }
 
-  // -- IfcTypes: template + typeparameters = één type, instanties gekoppeld via RelDefinesByType.
-  //    NB: het type krijgt een eigen volgnummer, géén merk — een merk hangt (via lengte)
-  //    aan instanties en één type kan meerdere merken omvatten. --
+  // -- IfcTypes: benoemd type (v0.7-S5) krijgt zijn eigen naam; impliciete typen
+  //    (template + typeparameters) een volgnummer. Géén merk als typenaam — een merk
+  //    hangt (via lengte) aan instanties en één type kan meerdere merken omvatten. --
+  const namedTypes = new Map((opts.types ?? []).map((t) => [t.id, t]));
   const typeCounters = new Map<string, number>();
-  for (const [, group] of byType) {
+  for (const [typeKey, group] of byType) {
     const t = group.template;
-    const nr = (typeCounters.get(t.id) ?? 0) + 1;
-    typeCounters.set(t.id, nr);
-    const typeName = label(`${t.name} type ${String(nr).padStart(2, "0")}`);
+    const named = namedTypes.get(typeKey);
+    let name: string;
+    if (named) {
+      name = named.name;
+    } else {
+      const nr = (typeCounters.get(t.id) ?? 0) + 1;
+      typeCounters.set(t.id, nr);
+      name = `${t.name} type ${String(nr).padStart(2, "0")}`;
+    }
     const typeArgs = [
-      guid(), ownerHistory, typeName, null, null, null, null, null, label(t.name),
+      guid(), ownerHistory, label(name), null, null, null, null, null, label(t.name),
     ] as const;
     // Generieke type-factory via entity-mapper (v0.4-S1).
     const typeMakers = entityMakers(t, t.solids(1, t.defaults));
@@ -766,6 +794,34 @@ export async function exportElementsToIfc(
       modelID,
       new IFC4.IfcRelDefinesByType(guid(), ownerHistory, null, null, group.products, typeEntity),
     );
+  }
+
+  // -- v0.7-S3: verbindingen als IfcRelConnectsPathElements (L: ATSTART/ATEND, T: ATPATH) --
+  const connEnum = (end: "start" | "end" | "path") =>
+    end === "start"
+      ? IFC4.IfcConnectionTypeEnum.ATSTART
+      : end === "end"
+        ? IFC4.IfcConnectionTypeEnum.ATEND
+        : IFC4.IfcConnectionTypeEnum.ATPATH;
+  for (const j of opts.joins ?? []) {
+    const a = productByElementId.get(j.aId);
+    const b = productByElementId.get(j.bId);
+    if (!a || !b) continue;
+    try {
+      api.WriteLine(
+        modelID,
+        new IFC4.IfcRelConnectsPathElements(
+          guid(), ownerHistory,
+          label("Verbinding"), null, null,
+          a as any, b as any,
+          [], [],
+          // arg-volgorde in IFC4: RelatedConnectionType (b) vóór RelatingConnectionType (a)
+          connEnum(j.bEnd), connEnum(j.aEnd),
+        ),
+      );
+    } catch (err) {
+      console.warn("IfcRelConnectsPathElements niet geserialiseerd:", err);
+    }
   }
 
   // -- stramien (IfcGrid) op de onderste bouwlaag --

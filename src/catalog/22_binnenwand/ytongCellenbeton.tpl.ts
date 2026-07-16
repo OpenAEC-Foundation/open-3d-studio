@@ -22,7 +22,7 @@ export const ytongCellenbeton: ComponentTemplate = {
   isExternal: false,
 
   placementKind: "linear",
-  materialLayers: [{ material: "Cellenbeton (Ytong)", thicknessMm: 100, category: "structure" }],
+  materialLayers: [{ material: "Cellenbeton (Ytong)", thicknessMm: 100, category: "structure", lambda: 0.11 }],
 
   ifcEntity: "IfcWall",
   ifcPredefinedType: "PARTITIONING",

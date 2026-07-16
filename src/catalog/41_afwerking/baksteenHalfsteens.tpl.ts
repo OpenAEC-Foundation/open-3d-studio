@@ -18,7 +18,7 @@ export const baksteenHalfsteens: ComponentTemplate = {
   isExternal: true,
 
   placementKind: "linear",
-  materialLayers: [{ material: "Baksteen (keramisch)", thicknessMm: 100, category: "cladding" }],
+  materialLayers: [{ material: "Baksteen (keramisch)", thicknessMm: 100, category: "cladding", lambda: 0.7 }],
 
   ifcEntity: "IfcCovering",
   ifcPredefinedType: "CLADDING",

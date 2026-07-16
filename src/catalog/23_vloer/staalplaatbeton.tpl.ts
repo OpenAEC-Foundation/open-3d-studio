@@ -21,8 +21,8 @@ export const staalplaatbeton: ComponentTemplate = {
 
   placementKind: "surface",
   materialLayers: [
-    { material: "Staal, trapeziumplaat", thicknessMm: 1, category: "structure", loadBearing: true },
-    { material: "Beton, in-situ", thicknessMm: 90, category: "structure", loadBearing: true },
+    { material: "Staal, trapeziumplaat", thicknessMm: 1, category: "structure", loadBearing: true, lambda: 50 },
+    { material: "Beton, in-situ", thicknessMm: 90, category: "structure", loadBearing: true, lambda: 2.3 },
   ],
 
   ifcEntity: "IfcSlab",

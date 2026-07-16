@@ -21,9 +21,9 @@ export const metalStudGips: ComponentTemplate = {
 
   placementKind: "linear",
   materialLayers: [
-    { material: "Gipsplaat", thicknessMm: 12.5, category: "finish" },
-    { material: "Staal, stijlwerk + minerale wol", thicknessMm: 70, category: "structure" },
-    { material: "Gipsplaat", thicknessMm: 12.5, category: "finish" },
+    { material: "Gipsplaat", thicknessMm: 12.5, category: "finish", lambda: 0.25 },
+    { material: "Staal, stijlwerk + minerale wol", thicknessMm: 70, category: "structure", lambda: 0.035 },
+    { material: "Gipsplaat", thicknessMm: 12.5, category: "finish", lambda: 0.25 },
   ],
 
   ifcEntity: "IfcWall",

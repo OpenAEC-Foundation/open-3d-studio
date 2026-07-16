@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_PHASE_SETTINGS, Studio, type PhaseSettings, type ToolName, type ViewName } from "./core/studio";
 import { allTemplates, getTemplate, subscribeRuntimeTemplates } from "./catalog/registry";
-import type { ElementPhase, GridConfig, LoadedModelInfo, ParamValues, PlacedElement, Sheet, Storey } from "./core/types";
+import { deriveMainCategory, groupByMainCategory } from "./core/mainCategory";
+import type { ElementPhase, GridConfig, LoadedModelInfo, ParamValues, PlacedElement, Sheet, Storey, TypeDefinition } from "./core/types";
 import { openFilesDialog, saveFileAs } from "./core/fileio";
 import { listPresets } from "./core/ilsCheck";
 import { EXAMPLE_PLUGIN_JS } from "./core/pluginApi";
@@ -52,13 +53,6 @@ function buildQuantities(elements: PlacedElement[]): QtyRow[] {
 
 const VIEW_IDS: ViewName[] = ["iso", "top", "front", "back", "left", "right"];
 
-const PHASE_LABELS: Record<ElementPhase, string> = {
-  new: "Nieuwbouw",
-  existing: "Bestaand",
-  demolished: "Te slopen",
-  temporary: "Tijdelijk",
-};
-
 function idsPresetTitle(id: string): string {
   return listPresets().find((p) => p.id === id)?.title ?? "IDS";
 }
@@ -106,6 +100,15 @@ export default function App() {
   const [phaseSettings, setPhaseSettings] = useState<PhaseSettings>(() => JSON.parse(JSON.stringify(DEFAULT_PHASE_SETTINGS)));
   const [templatesRev, setTemplatesRev] = useState(0);
   const [showTemplateEditor, setShowTemplateEditor] = useState(false);
+  // v0.7: multi-select, typen, reeks/offset, hoofdcategorie-kiezer
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [typeDefs, setTypeDefs] = useState<TypeDefinition[]>([]);
+  const [activeTypeId, setActiveTypeId] = useState<string>("");
+  const [arrayCount, setArrayCount] = useState(3);
+  const [arraySpacing, setArraySpacing] = useState(600);
+  const [mainCat, setMainCat] = useState<string>("Wanden");
+  const [lastTemplateByCat, setLastTemplateByCat] = useState<Record<string, string>>({});
+  const phaseColorTimer = useRef<number | null>(null);
   const [speckleCfg, setSpeckleCfg] = useState({ host: "https://speckle.xyz", token: "", streamId: "", branchName: "main" });
   const [pluginSrc, setPluginSrc] = useState(EXAMPLE_PLUGIN_JS);
   const [aiKey, setAiKey] = useState(() => localStorage.getItem("o3s-apikey") ?? "");
@@ -146,6 +149,8 @@ export default function App() {
         setOrigin({ x: Math.round(o.x * 1000), y: Math.round(o.y * 1000), z: Math.round(o.z * 1000) }),
       onGeoRefChanged: setGeoRef,
       onPhaseSettingsChanged: setPhaseSettings,
+      onSelectionSetChanged: setSelectedIds,
+      onTypesChanged: setTypeDefs,
       onStoreysChanged: (s, activeId) => {
         setStoreys(s);
         setActiveStoreyId(activeId);
@@ -226,6 +231,38 @@ export default function App() {
     setTemplateId(id);
     setParams({ ...getTemplate(id).defaults });
     studio()?.setActiveTemplate(id);
+    setActiveTypeId("");
+    studio()?.setActiveType(null);
+    const cat = deriveMainCategory(getTemplate(id));
+    setMainCat(cat);
+    setLastTemplateByCat((m) => ({ ...m, [cat]: id }));
+  };
+
+  /** v0.7-S6: ribbon-tekenknop per hoofdcategorie — laatst gebruikte template wint. */
+  const drawCategory = (cat: string) => {
+    const grouped = groupByMainCategory(templates);
+    const inCat = grouped.find((g) => g.category === cat)?.templates ?? [];
+    if (inCat.length === 0) return;
+    const remembered = lastTemplateByCat[cat];
+    const id = remembered && inCat.some((tm) => tm.id === remembered) ? remembered : inCat[0].id;
+    onTemplateChange(id);
+    activateTool("draw");
+  };
+
+  /** v0.7-S5: type kiezen — zet template + params via de engine. */
+  const onTypeChange = (typeId: string) => {
+    setActiveTypeId(typeId);
+    const s = studio();
+    if (!s) return;
+    s.setActiveType(typeId || null);
+    if (typeId) {
+      const def = typeDefs.find((td) => td.id === typeId);
+      if (def) {
+        setTemplateId(def.templateId);
+        setParams({ ...getTemplate(def.templateId).defaults, ...def.typeParams });
+        setMainCat(deriveMainCategory(getTemplate(def.templateId)));
+      }
+    }
   };
 
   const onParamsChange = (next: ParamValues) => {
@@ -308,10 +345,10 @@ export default function App() {
         gridInfo: grid,
       });
       const n = s.applyAssistantPlacements(antwoord.placements);
-      setAiMessage(antwoord.message || (n > 0 ? `${n} element(en) geplaatst.` : "Geen plaatsingen."));
+      setAiMessage(antwoord.message || (n > 0 ? `${n} ${t("aiPlacedSuffix")}` : t("aiNoPlacements")));
     } catch (err) {
       console.error(err);
-      setAiMessage(err instanceof Error ? err.message : "Assistent-aanroep mislukt.");
+      setAiMessage(err instanceof Error ? err.message : t("aiCallFailed"));
     } finally {
       setAiBusy(false);
     }
@@ -369,6 +406,13 @@ export default function App() {
     right: t("viewRight"),
   };
 
+  const phaseLabels: Record<ElementPhase, string> = {
+    new: t("phaseNew"),
+    existing: t("phaseExisting"),
+    demolished: t("phaseDemolished"),
+    temporary: t("phaseTemporary"),
+  };
+
   const ribbonTabs: RibbonTab[] = [
     {
       id: "start",
@@ -404,7 +448,7 @@ export default function App() {
             { id: "pdf", icon: "⎙", label: t("btnExportPdf"), onClick: () => studio()?.exportPdf(viewLabels[view]) },
             { id: "dxf", icon: "▱", label: t("btnExportDxf"), onClick: () => studio()?.exportDxf() },
             { id: "dwg13", icon: "▤", label: "DWG (2013)", onClick: () => studio()?.exportDwg("r2013") },
-            { id: "dwg18", icon: "▥", label: "DWG (2018) exp.", title: "Experimental — vereist acadrust ≥ 0.5", onClick: () => studio()?.exportDwg("r2018") },
+            { id: "dwg18", icon: "▥", label: "DWG (2018) exp.", title: t("dwg18Title"), onClick: () => studio()?.exportDwg("r2018") },
             { id: "prod", icon: "⚙", label: t("btnProductie"), onClick: () => studio()?.exportElementeerRapport(maxPaneel) },
             { id: "csv", icon: "▦", label: t("btnExportCsv"), onClick: exportCsv },
           ],
@@ -416,13 +460,13 @@ export default function App() {
               id: "ils",
               icon: "✓",
               label: `IDS: ${idsPresetTitle(idsPreset)}`,
-              title: "Draai de gekozen IDS-preset (kies onder in het IDS-paneel).",
+              title: t("idsRunTitle"),
               onClick: async () => setIlsReport((await studio()?.runIdsPreset(idsPreset)) ?? null),
             },
             {
               id: "idsFile",
               icon: "◈",
-              label: "IDS uit bestand",
+              label: t("btnIdsFile"),
               onClick: async () => {
                 const files = await openFilesDialog(
                   [{ name: "IDS", extensions: ["ids", "xml"] }],
@@ -440,7 +484,7 @@ export default function App() {
             {
               id: "bcfImport",
               icon: "⇢",
-              label: "BCF importeren",
+              label: t("btnBcfImport"),
               onClick: async () => {
                 const files = await openFilesDialog(
                   [{ name: "BCF", extensions: ["bcf", "bcfzip"] }],
@@ -452,15 +496,15 @@ export default function App() {
             {
               id: "struct",
               icon: "▲",
-              label: "Structural aspect",
-              title: "Exporteer de dragende elementen als IfcStructuralAnalysisModel (Scia/RFEM).",
+              label: t("btnStructural"),
+              title: t("structuralTitle"),
               onClick: () => studio()?.exportStructural(),
             },
             {
               id: "cobie",
               icon: "▨",
-              label: "COBie ZIP",
-              title: "COBie 2.4 CSV-tabbladen (Facility/Floor/Type/Component/System) in één ZIP.",
+              label: t("btnCobie"),
+              title: t("cobieTitle"),
               onClick: () => studio()?.exportCobie(),
             },
           ],
@@ -479,10 +523,31 @@ export default function App() {
           ],
         },
         {
+          // v0.7-S6: Revit-patroon — één tekenknop per hoofdcategorie
+          title: t("grpCategories"),
+          items: groupByMainCategory(templates).slice(0, 8).map((g) => ({
+            id: `cat-${g.category}`,
+            icon: ({ Wanden: "▥", Vloeren: "▬", Daken: "⌂", Draagconstructie: "╫", Fundering: "▁", "Kozijnen & deuren": "◫", Installaties: "⚙", "Trappen & hellingen": "▨" } as Record<string, string>)[g.category] ?? "▤",
+            label: g.category.split(" ")[0],
+            title: `${g.category}: ${t("catDrawTitle")} (${g.templates.length} ${t("catAvailable")})`,
+            active: tool === "draw" && deriveMainCategory(template) === g.category,
+            onClick: () => drawCategory(g.category),
+          })),
+        },
+        {
           title: t("grpEdit"),
           items: [
+            { id: "clipCopy", icon: "⧉", label: t("btnClipCopy"), title: t("clipCopyTitle"), onClick: () => studio()?.copySelection() },
+            { id: "clipCut", icon: "✂", label: t("btnClipCut"), title: "Ctrl+X", onClick: () => studio()?.cutSelection() },
+            { id: "clipPaste", icon: "⎘", label: t("btnClipPaste"), title: "Ctrl+V", onClick: () => studio()?.paste() },
+            { id: "align", icon: "≡", label: t("btnAlign"), active: tool === "align", title: t("alignTitle"), onClick: () => activateTool("align") },
+            { id: "mirror", icon: "⇋", label: t("btnMirror"), active: tool === "mirror", title: t("mirrorTitle"), onClick: () => activateTool("mirror") },
+            { id: "split", icon: "⊟", label: t("btnSplit"), active: tool === "split", onClick: () => activateTool("split") },
+            { id: "openingTool", icon: "◻", label: t("panOpening"), active: tool === "opening", onClick: () => activateTool("opening") },
+            { id: "openingPoly", icon: "⬠", label: t("btnOpeningPoly"), active: tool === "opening-poly", title: t("openingPolyTitle"), onClick: () => activateTool("opening-poly") },
+            { id: "match", icon: "🖌", label: t("btnMatch"), active: tool === "match", title: t("matchTitle"), onClick: () => activateTool("match") },
             ...(selected
-              ? [{ id: "copy", icon: "⧉", label: t("btnCopy"), onClick: () => studio()?.copyElement(selected.id) }]
+              ? [{ id: "unjoin", icon: "⋈", label: t("btnUnjoin"), title: t("unjoinTitle"), onClick: () => studio()?.unjoinElement(selected.id) }]
               : []),
             { id: "undo", icon: "↶", label: t("btnUndo"), title: "Ctrl+Z", onClick: () => studio()?.undo() },
             { id: "redo", icon: "↷", label: t("btnRedo"), title: "Ctrl+Y", onClick: () => studio()?.redo() },
@@ -528,22 +593,22 @@ export default function App() {
     },
     {
       id: "ecosystem",
-      label: "Ecosysteem",
+      label: t("tabEcosystem"),
       groups: [
         {
-          title: "Templates",
+          title: t("grpTemplates"),
           items: [
             {
               id: "openEditor",
               icon: "⧉",
-              label: "Template-editor",
-              title: ".o3st bewerken of nieuwe maken",
+              label: t("btnTemplateEditor"),
+              title: t("templateEditorTitle"),
               onClick: () => setShowTemplateEditor(true),
             },
             {
               id: "loadO3st",
               icon: "⇢",
-              label: "Laad .o3st",
+              label: t("btnLoadO3st"),
               onClick: async () => {
                 const files = await openFilesDialog([{ name: "Open 3D Studio-template", extensions: ["o3st"] }], false);
                 if (!files.length) return;
@@ -560,13 +625,13 @@ export default function App() {
           ],
         },
         {
-          title: "Bibliotheken",
+          title: t("grpLibraries"),
           items: [
             {
               id: "loadFamily",
               icon: "◧",
-              label: "IFC-family",
-              title: "IFC-bibliotheek van een fabrikant importeren als plaatsbare proxies",
+              label: t("btnIfcFamily"),
+              title: t("ifcFamilyTitle"),
               onClick: async () => {
                 const files = await openFilesDialog([{ name: "IFC-family", extensions: ["ifc"] }], false);
                 if (files.length) await studio()?.importIfcFamily(files[0]);
@@ -575,37 +640,37 @@ export default function App() {
           ],
         },
         {
-          title: "Constructie",
+          title: t("grpStructural"),
           items: [
             {
               id: "rebar",
               icon: "▤",
-              label: "Wapening-BOM",
-              title: "IfcReinforcingBar/Mesh: BOM als CSV",
+              label: t("btnRebarBom"),
+              title: t("rebarBomTitle"),
               onClick: () => studio()?.exportRebarBom(),
             },
           ],
         },
         {
-          title: "Doorsnede",
+          title: t("grpSection"),
           items: [
             {
               id: "sectionSvg",
               icon: "◪",
-              label: "Doorsnede-SVG",
-              title: "Hatch per materiaal, schaal 1:50",
+              label: t("btnSectionSvg"),
+              title: t("sectionSvgTitle"),
               onClick: () => studio()?.exportSectionSvg({ normal: "x", offset: 0 }, 50),
             },
           ],
         },
         {
-          title: "Cloud",
+          title: t("grpCloud"),
           items: [
             {
               id: "speckle",
               icon: "☁",
-              label: "Push Speckle",
-              title: "Model naar Speckle-stream (config in het paneel)",
+              label: t("btnPushSpeckle"),
+              title: t("pushSpeckleTitle"),
               onClick: async () => {
                 if (!speckleCfg.token || !speckleCfg.streamId) {
                   setStatus("Vul eerst token + streamId in bij Speckle-paneel.");
@@ -714,17 +779,53 @@ export default function App() {
           <section>
             <h2>{t("panComponent")}</h2>
             {!selected && (
-              <select
-                className="template-select"
-                value={templateId}
-                onChange={(e) => onTemplateChange(e.target.value)}
-              >
-                {templates.map((tm) => (
-                  <option key={tm.id} value={tm.id}>
-                    {tm.name}
-                  </option>
-                ))}
-              </select>
+              <>
+                {/* v0.7-S6: getrapte kiezer — hoofdcategorie → template → type */}
+                <select
+                  className="template-select"
+                  value={mainCat}
+                  onChange={(e) => {
+                    const cat = e.target.value;
+                    setMainCat(cat);
+                    const inCat = groupByMainCategory(templates).find((g) => g.category === cat)?.templates ?? [];
+                    if (inCat.length > 0 && !inCat.some((tm) => tm.id === templateId)) {
+                      const remembered = lastTemplateByCat[cat];
+                      onTemplateChange(remembered && inCat.some((tm) => tm.id === remembered) ? remembered : inCat[0].id);
+                    }
+                  }}
+                >
+                  {groupByMainCategory(templates).map((g) => (
+                    <option key={g.category} value={g.category}>
+                      {g.category} ({g.templates.length})
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="template-select"
+                  value={templateId}
+                  onChange={(e) => onTemplateChange(e.target.value)}
+                >
+                  {(groupByMainCategory(templates).find((g) => g.category === mainCat)?.templates ?? templates).map((tm) => (
+                    <option key={tm.id} value={tm.id}>
+                      {tm.name}
+                    </option>
+                  ))}
+                </select>
+                {typeDefs.some((td) => td.templateId === templateId) && (
+                  <select
+                    className="template-select"
+                    value={activeTypeId}
+                    onChange={(e) => onTypeChange(e.target.value)}
+                  >
+                    <option value="">{t("freeParams")}</option>
+                    {typeDefs
+                      .filter((td) => td.templateId === templateId)
+                      .map((td) => (
+                        <option key={td.id} value={td.id}>{td.name}</option>
+                      ))}
+                  </select>
+                )}
+              </>
             )}
             <p className="muted">{selected ? `${selected.name} — ${t("editParams")}` : t("newParams")}</p>
             <ParamsPanel template={template} values={params} onChange={onParamsChange} />
@@ -732,6 +833,32 @@ export default function App() {
               <div className="btn-row">
                 <button className="mini" onClick={savePreset}>{t("presetSave")}</button>
                 <button className="mini" onClick={loadPreset}>{t("presetLoad")}</button>
+              </div>
+            )}
+            {/* v0.7-S1: bulk-acties bij meervoudige selectie */}
+            {selectedIds.length > 1 && (
+              <div className="selected-tools">
+                <p className="muted"><strong>{selectedIds.length} {t("elementsSelected")}</strong></p>
+                <div className="btn-row">
+                  <button className="mini" onClick={() => studio()?.copySelection()}>{t("btnClipCopy")}</button>
+                  <button className="mini" onClick={() => studio()?.cutSelection()}>{t("btnClipCut")}</button>
+                  <button className="mini danger" onClick={() => studio()?.removeSelected()}>{t("btnDelete")}</button>
+                </div>
+                <label className="param-row">
+                  <span>{t("arrayCountLabel")}</span>
+                  <input type="number" min={1} max={50} value={arrayCount} onChange={(e) => setArrayCount(Number(e.target.value))} />
+                </label>
+                <label className="param-row">
+                  <span>{t("spacingCtc")}</span>
+                  <span className="param-input">
+                    <input type="number" step={50} value={arraySpacing} onChange={(e) => setArraySpacing(Number(e.target.value))} />
+                    <em>mm</em>
+                  </span>
+                </label>
+                <div className="btn-row">
+                  <button className="mini" onClick={() => studio()?.arraySelection(arrayCount, arraySpacing)}>{t("btnArray")}</button>
+                  <button className="mini" onClick={() => studio()?.offsetSelection(arraySpacing)}>{t("btnOffset")}</button>
+                </div>
               </div>
             )}
             {selected && (
@@ -768,40 +895,49 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-                <label className="param-row">
-                  <span>{t("openingEnabled")}</span>
-                  <input
-                    type="checkbox"
-                    checked={!!selected.opening}
-                    onChange={(e) =>
-                      studio()?.setElementOpening(
-                        selected.id,
-                        e.target.checked
-                          ? { xPos: (selectedLengthMm / 2000) || 1, breedte: 0.9, hoogte: 2.1 }
-                          : null,
-                      )
-                    }
-                  />
-                </label>
-                {selected.opening && (
-                  <>
+                {/* v0.7-S4: meerdere sparingen per element */}
+                <h3 className="sub">{t("openings")} ({(selected.openings ?? []).length})</h3>
+                {(selected.openings ?? []).map((op) => (
+                  <div key={op.id} className="opening-row">
+                    <div className="btn-row">
+                      <select
+                        value={op.shape ?? "rect"}
+                        disabled={op.kind === "raam" || op.kind === "deur"}
+                        onChange={(e) =>
+                          studio()?.updateOpening(selected.id, op.id!, { shape: e.target.value as "rect" | "round" })
+                        }
+                      >
+                        <option value="rect">{t("btnRect")}</option>
+                        <option value="round">{t("shapeRound")}</option>
+                      </select>
+                      <span className="muted">{op.kind ?? t("openingFree")}</span>
+                      <button
+                        className="mini"
+                        title={op.kind === "raam" || op.kind === "deur" ? t("openingLinkedTitle") : t("openingRemoveTitle")}
+                        disabled={op.kind === "raam" || op.kind === "deur"}
+                        onClick={() => studio()?.removeOpening(selected.id, op.id!)}
+                      >
+                        ✕
+                      </button>
+                    </div>
                     {(
                       [
-                        ["openingPos", "xPos"],
-                        ["openingWidth", "breedte"],
-                        ["openingHeight", "hoogte"],
-                      ] as const
-                    ).map(([labelKey, field]) => (
+                        [t("posLabel"), "xPos"],
+                        [op.shape === "round" ? t("diameterLabel") : t("openingWidth"), "breedte"],
+                        ...(op.shape === "round" ? [] : [[t("openingHeight"), "hoogte"] as const]),
+                        [t("bottomLabel"), "zBottom"],
+                      ] as [string, "xPos" | "breedte" | "hoogte" | "zBottom"][]
+                    ).map(([lbl, field]) => (
                       <label key={field} className="param-row">
-                        <span>{t(labelKey)}</span>
+                        <span>{lbl}</span>
                         <span className="param-input">
                           <input
                             type="number"
                             step={10}
-                            value={Math.round((selected.opening?.[field] ?? 0) * 1000)}
+                            disabled={op.kind === "raam" || op.kind === "deur"}
+                            value={Math.round(((op[field] as number | undefined) ?? 0) * 1000)}
                             onChange={(e) =>
-                              studio()?.setElementOpening(selected.id, {
-                                ...selected.opening!,
+                              studio()?.updateOpening(selected.id, op.id!, {
                                 [field]: Number(e.target.value) / 1000,
                               })
                             }
@@ -810,10 +946,26 @@ export default function App() {
                         </span>
                       </label>
                     ))}
-                  </>
-                )}
+                  </div>
+                ))}
+                <div className="btn-row">
+                  <button
+                    className="mini"
+                    onClick={() => {
+                      const s = studio();
+                      if (!s || !selected) return;
+                      const mid = selected.start.clone().lerp(selected.end, 0.5);
+                      s.addOpeningAt(selected.id, mid);
+                    }}
+                  >
+                    {t("addOpeningCenter")}
+                  </button>
+                  <button className="mini" onClick={() => { activateTool("opening"); }}>
+                    {t("addOpeningClick")}
+                  </button>
+                </div>
                 <label className="param-row">
-                  <span>Bouwkundige fase</span>
+                  <span>{t("constructionPhase")}</span>
                   <select
                     value={selected.phase ?? "new"}
                     onChange={(e) =>
@@ -823,18 +975,78 @@ export default function App() {
                       )
                     }
                   >
-                    <option value="new">Nieuwbouw</option>
-                    <option value="existing">Bestaand</option>
-                    <option value="demolished">Te slopen</option>
-                    <option value="temporary">Tijdelijk</option>
+                    <option value="new">{phaseLabels.new}</option>
+                    <option value="existing">{phaseLabels.existing}</option>
+                    <option value="demolished">{phaseLabels.demolished}</option>
+                    <option value="temporary">{phaseLabels.temporary}</option>
                   </select>
                 </label>
+                <div className="btn-row">
+                  <button
+                    className="mini"
+                    title={t("saveAsTypeTitle")}
+                    onClick={() => {
+                      const name = window.prompt(t("typeNamePrompt"), `${template.name} — variant`);
+                      if (name) studio()?.saveAsType(name, selected.id);
+                    }}
+                  >
+                    {t("btnSaveAsType")}
+                  </button>
+                  <button className="mini" onClick={() => studio()?.arraySelection(arrayCount, arraySpacing)}>
+                    {t("btnArray")} {arrayCount}×{arraySpacing}
+                  </button>
+                </div>
                 <button className="danger" onClick={() => studio()?.removeElement(selected.id)}>
                   {t("deleteElement")}
                 </button>
               </div>
             )}
           </section>
+
+          {typeDefs.length > 0 && (
+            <section>
+              <h2>{t("panTypes")} ({typeDefs.length})</h2>
+              <ul className="list">
+                {typeDefs.map((td) => {
+                  let tplName = td.templateId;
+                  try { tplName = getTemplate(td.templateId).name; } catch { /* template weg */ }
+                  return (
+                    <li key={td.id} className="type-row">
+                      <button
+                        className={td.id === activeTypeId ? "list-btn active" : "list-btn"}
+                        title={`${tplName} — ${t("typeClickToDraw")}`}
+                        onClick={() => onTypeChange(td.id === activeTypeId ? "" : td.id)}
+                      >
+                        {td.name}
+                      </button>
+                      <button
+                        className="mini"
+                        title={t("duplicateTypeTitle")}
+                        onClick={() => {
+                          const name = window.prompt(t("duplicateNamePrompt"), `${td.name} (${t("copySuffix")})`);
+                          if (name) studio()?.duplicateType(td.id, name);
+                        }}
+                      >
+                        ⧉
+                      </button>
+                      <button
+                        className="mini"
+                        title={t("applyToSelectionTitle")}
+                        disabled={selectedIds.length === 0}
+                        onClick={() => studio()?.applyType(td.id, selectedIds)}
+                      >
+                        →
+                      </button>
+                      <button className="mini" title={t("removeTypeTitle")} onClick={() => studio()?.removeType(td.id)}>
+                        ✕
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="muted">{t("typesHint")}</p>
+            </section>
+          )}
 
           <section>
             <h2>{t("panStoreys")}</h2>
@@ -844,7 +1056,7 @@ export default function App() {
                   <input
                     type="radio"
                     name="active-storey"
-                    title="Actieve verdieping"
+                    title={t("activeStoreyTitle")}
                     checked={s.id === activeStoreyId}
                     onChange={() => studio()?.setActiveStorey(s.id)}
                   />
@@ -992,9 +1204,9 @@ export default function App() {
           </section>
 
           <section>
-            <h2>IDS-controle</h2>
+            <h2>{t("panIdsCheck")}</h2>
             <label className="param-row">
-              <span>Ruleset</span>
+              <span>{t("ruleset")}</span>
               <select value={idsPreset} onChange={(e) => setIdsPreset(e.target.value)}>
                 {listPresets().map((p) => (
                   <option key={p.id} value={p.id}>{p.title}</option>
@@ -1006,7 +1218,7 @@ export default function App() {
                 className="mini accent"
                 onClick={async () => setIlsReport((await studio()?.runIdsPreset(idsPreset)) ?? null)}
               >
-                Controleren
+                {t("btnRunCheck")}
               </button>
               <button
                 className="mini"
@@ -1015,32 +1227,28 @@ export default function App() {
                   if (files.length) setIlsReport((await studio()?.runIdsFile(files[0])) ?? null);
                 }}
               >
-                IDS-bestand …
+                {t("btnIdsFileDots")}
               </button>
             </div>
-            <p className="muted">
-              Kies BIM basis ILS 2.0, Bbl Rc-controle, of één van de ILS O&amp;E-templates
-              (SO/VO/DO/TO/UO). Eigen IDS-bestanden mogen ook — bijvoorbeeld direct uit
-              de BIM Loket IDS Configurator.
-            </p>
+            <p className="muted">{t("idsHint")}</p>
           </section>
 
           <section>
-            <h2>Fasering</h2>
-            <p className="muted">Filter en styling per bouwkundige fase.</p>
+            <h2>{t("panPhasing")}</h2>
+            <p className="muted">{t("phasingHint")}</p>
             <table className="phase-table">
               <thead>
                 <tr>
-                  <th>Fase</th>
-                  <th>Zicht</th>
-                  <th>Kleur</th>
-                  <th>Streep</th>
+                  <th>{t("colPhase")}</th>
+                  <th>{t("colVisible")}</th>
+                  <th>{t("colColor")}</th>
+                  <th>{t("colDashed")}</th>
                 </tr>
               </thead>
               <tbody>
-                {(Object.keys(PHASE_LABELS) as ElementPhase[]).map((ph) => (
+                {(Object.keys(phaseLabels) as ElementPhase[]).map((ph) => (
                   <tr key={ph}>
-                    <td>{PHASE_LABELS[ph]}</td>
+                    <td>{phaseLabels[ph]}</td>
                     <td>
                       <input
                         type="checkbox"
@@ -1054,16 +1262,21 @@ export default function App() {
                     </td>
                     <td>
                       {ph === "new" ? (
-                        <span className="muted" title="Nieuwbouw gebruikt de template-kleur">–</span>
+                        <span className="muted" title={t("phaseNewColorTitle")}>–</span>
                       ) : (
                         <input
                           type="color"
                           value={phaseSettings.color[ph] || "#7f7a70"}
-                          onChange={(e) =>
-                            studio()?.setPhaseSettings({
-                              color: { ...phaseSettings.color, [ph]: e.target.value },
-                            })
-                          }
+                          onChange={(e) => {
+                            // debounce: de color-picker vuurt per drag-tick en elke
+                            // setPhaseSettings herbouwt de hele scene
+                            const value = e.target.value;
+                            setPhaseSettings((p) => ({ ...p, color: { ...p.color, [ph]: value } }));
+                            if (phaseColorTimer.current) window.clearTimeout(phaseColorTimer.current);
+                            phaseColorTimer.current = window.setTimeout(() => {
+                              studio()?.setPhaseSettings({ color: { ...phaseSettings.color, [ph]: value } });
+                            }, 150);
+                          }}
                         />
                       )}
                     </td>
@@ -1321,17 +1534,17 @@ export default function App() {
             )}
           </section>
           <section>
-            <h2>Speckle</h2>
-            <label className="param-row"><span>Host</span>
+            <h2>{t("panSpeckle")}</h2>
+            <label className="param-row"><span>{t("speckleHost")}</span>
               <input value={speckleCfg.host} onChange={(e) => setSpeckleCfg({ ...speckleCfg, host: e.target.value })} />
             </label>
-            <label className="param-row"><span>Stream ID</span>
+            <label className="param-row"><span>{t("speckleStreamId")}</span>
               <input value={speckleCfg.streamId} onChange={(e) => setSpeckleCfg({ ...speckleCfg, streamId: e.target.value })} />
             </label>
-            <label className="param-row"><span>Branch</span>
+            <label className="param-row"><span>{t("speckleBranch")}</span>
               <input value={speckleCfg.branchName} onChange={(e) => setSpeckleCfg({ ...speckleCfg, branchName: e.target.value })} />
             </label>
-            <label className="param-row"><span>Token</span>
+            <label className="param-row"><span>{t("speckleToken")}</span>
               <input type="password" value={speckleCfg.token} onChange={(e) => setSpeckleCfg({ ...speckleCfg, token: e.target.value })} />
             </label>
             <div className="btn-row">
@@ -1340,16 +1553,14 @@ export default function App() {
                 disabled={!speckleCfg.token || !speckleCfg.streamId}
                 onClick={() => studio()?.pushSpeckle(speckleCfg)}
               >
-                Push commit
+                {t("specklePushCommit")}
               </button>
             </div>
-            <p className="muted">
-              Push naar Speckle 2.x. Vraag een personal access token in je account-instellingen.
-            </p>
+            <p className="muted">{t("speckleHint")}</p>
           </section>
 
           <section>
-            <h2>Plugin</h2>
+            <h2>{t("panPlugin")}</h2>
             <textarea
               className="ai-prompt"
               rows={8}
@@ -1360,7 +1571,7 @@ export default function App() {
             />
             <div className="btn-row">
               <button className="mini accent" onClick={() => studio()?.runPlugin(pluginSrc)}>
-                Draai plugin
+                {t("btnRunPlugin")}
               </button>
               <button
                 className="mini"
@@ -1372,13 +1583,10 @@ export default function App() {
                   await studio()?.runPlugin(src);
                 }}
               >
-                Laad .o3sp …
+                {t("btnLoadO3sp")}
               </button>
             </div>
-            <p className="muted">
-              ⚠ Plugins draaien met vólledige toegang (geen sandbox; netwerk en
-              opslag bereikbaar). Laad uitsluitend code die je vertrouwt en hebt gelezen.
-            </p>
+            <p className="muted">{t("pluginWarning")}</p>
           </section>
 
           <section>

@@ -4,6 +4,24 @@
 
 > **Stand v0.6.0 (2026-07-16)**: alle 7 v1.0-scope-items werkend als eerste versie,
 > plus de 10 bevindingen uit de multi-agent codereview opgelost (zie RELEASE_NOTES).
+>
+> **Stand v0.8.0 (2026-07-16)**: modelleerkern compleet. Bovenop de v0.7-sprints:
+> stompe hoekaansluiting (butt joint) op L-verbindingen bij 75–105° (meebewegend,
+> BOM-correct), polygoon-sparingen (scanline, concaaf, → IfcArbitraryClosedProfileDef),
+> match properties (penseel). Inhaalslag: λ-waarden op alle 17 gelaagde templates
+> (Bbl-Rc-check dekt hele catalogus), i18n compleet voor alle v0.5–v0.7-UI (98 keys
+> NL/EN; engine-status blijft NL), wasm-singleton (`ifcCommon.ts`) + gedeelde
+> GUID-encoder. Naar v0.9: template-editor-i18n, Worker-sandbox plugins,
+> IfcAnnotation-round-trip, associatieve maatvoering, IFC's van derden bewerken.
+>
+> Voorheen — **v0.7.0-rc**: modelleerkern volwassen — alle 6 sprints uit
+> [VOORSTEL_v0.7_modelleerkern.md](VOORSTEL_v0.7_modelleerkern.md) werkend (8 beslissingen
+> bevestigd door Martijn). Multi-select (Ctrl/venster) + klembord (cross-project),
+> element-snapping + eind-handles, uitlijnen/spiegelen/reeks/offset, meebewegende
+> L/T-verbindingen (→ IfcRelConnectsPathElements) + splitsen, openingen 2.0 (meerdere,
+> rond+rechthoek, vloer/dak, kozijn-gekoppeld), benoemde typen (project + bibliotheek,
+> → IfcType-namen), en 12 hoofdcategorieën (getrapte kiezer, ribbon-tekenknoppen,
+> lagenpaneel). Naar v0.8: verstek op hoeken, polygoon-sparingen, match properties.
 > **.o3st template-editor** — JSON-formaat + veilige procedurele shape-kinds
 > (`layered`/`solid-box`/`profile-swept`) + runtime-registry (`loadO3stTemplate`,
 > `subscribeRuntimeTemplates`). **IFC-family-import** converteert externe IFC's

@@ -21,8 +21,8 @@ export const breedplaatvloer: ComponentTemplate = {
 
   placementKind: "surface",
   materialLayers: [
-    { material: "Beton, prefab (breedplaat)", thicknessMm: 60, category: "structure", loadBearing: true },
-    { material: "Beton, in-situ druklaag", thicknessMm: 200, category: "structure", loadBearing: true },
+    { material: "Beton, prefab (breedplaat)", thicknessMm: 60, category: "structure", loadBearing: true, lambda: 2.3 },
+    { material: "Beton, in-situ druklaag", thicknessMm: 200, category: "structure", loadBearing: true, lambda: 2.3 },
   ],
 
   ifcEntity: "IfcSlab",

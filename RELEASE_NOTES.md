@@ -1,3 +1,133 @@
+# Open 3D Studio v0.8.0 — modelleerkern compleet + inhaalslag
+
+Bundelt drie slagen in één release: de **modelleerkern** (v0.7-scope, hieronder),
+de **inhaalslag** op bekende gaten, en de **v0.8-bewerkpunten**.
+
+## v0.8 — verstek, polygoon-sparingen, match properties
+
+- **Stompe hoekaansluiting (butt joint) op L-verbindingen** — bij hoeken van
+  75–105° steekt de doorlopende wand een halve dikte van de aansluitende wand
+  vóórbij het assnijpunt en stopt de aansluitende wand op het lijf van de
+  doorlopende: geen dubbel volume meer op de hoek, en de BOM-lengtes kloppen.
+  Scheve hoeken vallen terug op eindpunt-samenvallen. De aansluiting rekent
+  live mee bij verslepen (meebewegende joins).
+- **Polygoon-sparingen** — nieuw gereedschap: klik hoekpunten op één element,
+  rechtsklik rondt af (min. 3 punten, Esc annuleert). Ook concave polygonen
+  (scanline/even-odd, 16 strips). IFC: `IfcArbitraryClosedProfileDef`
+  geëxtrudeerd door de elementdikte. Werkt op wanden én vloeren/daken.
+- **Match properties (penseel)** — klik bron, dan doel-elementen: type-parameters
+  en typeId gaan over (peil blijft instantie-eigen); alleen tussen elementen van
+  hetzelfde template. Esc stopt.
+
+## Inhaalslag
+
+- **λ-waarden compleet** — alle 17 templates met materiaallagen hebben nu
+  warmtegeleidingscoëfficiënten (NEN 1068-forfaitair), dus de Bbl-Rc-check
+  werkt op de hele catalogus. Gecombineerde staal+wol-lagen rekenen met de
+  isolatiewaarde.
+- **i18n-inhaalslag** — alle v0.5–v0.7 UI-teksten (IDS-paneel, fasering, typen,
+  sparingen, Speckle, plugin, Ecosysteem-ribbon, bewerken-knoppen) via
+  i18n.ts met NL- én EN-vertaling. Engine-statusmeldingen blijven bewust NL
+  (bestaande keuze); de template-editor volgt in een latere slag.
+- **Wasm-singleton** (`getIfcApi()` in `src/core/ifcCommon.ts`) — export,
+  structural export, family-import en heropenen delen één web-ifc-initialisatie
+  i.p.v. elk hun eigen fetch+compile (honderden ms per operatie bespaard).
+  De gedupliceerde IFC-GUID-encoder is samengevoegd in dezelfde module.
+
+---
+
+# Open 3D Studio v0.7.0-rc — modelleerkern volwassen (bewerken, typen, hoofdcategorieën)
+
+De **Modelleerkern-release**: alle zes sprints uit `VOORSTEL_v0.7_modelleerkern.md`,
+gebouwd op de 8 vastgelegde beslissingen (Martijn, 2026-07-16).
+
+## S1 — Multi-select + klembord
+
+- **Multi-select**: Ctrl-klik togglet elementen in/uit de selectie; **Shift+drag**
+  = venster-selectie (L→R omsluitend / R→L kruisend, CAD-conventie, met
+  amber marquee-overlay). Ctrl+A selecteert alles. De hele selectie versleept mee.
+- **Klembord**: Ctrl+C/X/V — via localStorage, dus plakken werkt óók tussen twee
+  open projecten. Plakken zet het plaksel als nieuwe selectie met +0,5 m offset;
+  nogmaals plakken herhaalt. Delete/Backspace verwijdert de selectie.
+- **Bulk-paneel** bij >1 selectie: kopieer/knip/verwijder + reeks/offset.
+
+## S2 — Element-snapping, eind-handles, uitlijnen/spiegelen/reeks/offset
+
+- **Element-snapping**: teken- en handle-punten snappen op endpoints en midpoints
+  van bestaande elementen (0,25 m zoekradius, amber snap-marker); wint van
+  raster- en stramien-snap.
+- **Eind-handles** (Tekla-les): het geselecteerde lijnelement toont bolletjes op
+  start/end; verslepen wijzigt alleen dat eindpunt — trim/extend voor 90 % van
+  de gevallen. Na loslaten wordt automatisch een verbinding gezocht.
+- **Uitlijnen**: klik referentie-element, dan het te verschuiven element
+  (haakse translatie, alleen ~evenwijdig). **Spiegelen**: 2-punts as over de
+  selectie (kopie, Revit-default). **Reeks**: n× h.o.h. haaks op de as.
+  **Offset**: evenwijdige kopie op afstand.
+
+## S3 — Verbindingen (joins) + splitsen
+
+- **ElementJoin als relatie** (beslissing 2): L-verbinding (eindpunt-op-eindpunt)
+  en T-verbinding (eindpunt-op-lijf) ontstaan automatisch bij tekenen en
+  handle-slepen; `resolveJoins` laat verbonden eindpunten meebewegen bij
+  verslepen/draaien/lengte-wijziging. "Verbreek"-knop op de selectie.
+- **Splitsen**: klik op een lijnelement — twee elementen, sparingen verdeeld op
+  positie (xPos hermeten), joins op het oude eindpunt verhuizen mee.
+- **IFC**: joins exporteren als `IfcRelConnectsPathElements` met
+  ATSTART/ATEND/ATPATH.
+
+## S4 — Openingen 2.0
+
+- **Meerdere sparingen per element** (`openings[]` met id/vorm/kind/zBottom;
+  legacy enkelvoudige sparing migreert automatisch bij laden).
+- **Rechthoek + rond** (beslissing 6/8: rond via 12-strip-benadering, geen
+  CSG-dependency); borstwering via zBottom.
+- **Vloeren/daken**: gat in het vlak (2D-cut in as- én dwarsrichting).
+- **Sparingstool** in de ribbon: klik op een element → sparing op dat punt.
+- **Kozijn-koppeling**: een deur/raam op een host-wand maakt automatisch een
+  gekoppelde sparing (kind raam/deur) op kozijnmaat; kozijn verwijderen ruimt
+  de sparing op. IFC: elke sparing een eigen `IfcOpeningElement` (rond als
+  `IfcCircleProfileDef`).
+
+## S5 — Typen als eersteklas begrip
+
+- **TypeDefinition** (template + vastgezette parameters + naam), opgeslagen in
+  het project én in de gebruikersbibliotheek (localStorage, beslissing 4).
+- **"Opslaan als type"** vanaf een geselecteerd element, **dupliceren**,
+  **toepassen op selectie**, en **doorwerking**: type-params wijzigen update
+  alle instanties.
+- **Typen-paneel** + derde trap in de kiezer (hoofdcategorie → template → type);
+  tekenen met een actief type zet `typeId` op de plaatsing.
+- **IFC**: benoemde typen geven hun naam aan `IfcWallType` e.d. in plaats van
+  een volgnummer.
+
+## S6 — Hoofdcategorieën
+
+- **12 vaste hoofdcategorieën** afgeleid van NL-SfB (Wanden = 21+22 samen,
+  beslissing 1), override per template mogelijk (`mainCategory`).
+- **Getrapte kiezer** vervangt de platte 52+-dropdown.
+- **Ribbon-tekenknoppen per categorie** (beslissing 5, Revit-patroon): klik =
+  tekenen met het laatst gebruikte template in die categorie.
+- **Lagenpaneel op hoofdcategorie**: 12 lagen i.p.v. 24 losse strings.
+
+## Test-bewijs (dev-server)
+
+Alle checks runtime geverifieerd: multi-select (2), plakken (+2 elementen,
+plaksel geselecteerd), join volgt mee bij verplaatsing van de partner, splitsen
+(+1 element), ronde sparing op zBottom 1,0 m, type opslaan + toepassen
+(typeId gezet), lagen tonen "Wanden"/"Installaties" i.p.v. "Buitenwanden",
+undo/redo-round-trip behoudt openingen/joins/typen. IFC-export: 96 kB met
+`IFCRELCONNECTSPATHELEMENTS`, typenaam "HSB testtype" en 1 opening/void-paar.
+`tsc --noEmit` schoon; geen console-errors.
+
+## Nog uitgesteld
+
+- Verstek-geometrie op L-hoeken (nu eindpunt-samenvallen; volumes overlappen
+  minimaal op de hoek) — v0.8.
+- Vrije polygoon-sparingen — v0.8 (beslissing 6).
+- Match properties (penseel) — v0.8.
+
+---
+
 # Open 3D Studio v0.6.0 — ecosysteem (templates, families, MEP, wapening, Speckle, plugins, doorsnedes)
 
 ## Codereview-hardening — 10 bevindingen uit de multi-agent review opgelost

@@ -1,6 +1,7 @@
 import * as WebIFC from "web-ifc";
 import type { ComponentTemplate, SolidBox } from "./types";
 import { registerRuntimeTemplate } from "../catalog/registry";
+import { getIfcApi } from "./ifcCommon";
 
 /** IFC-family-import als IfcBuildingElementProxy (v0.6-2).
  *
@@ -26,9 +27,7 @@ export interface FamilyImportResult {
 }
 
 export async function importIfcFamily(file: File): Promise<FamilyImportResult> {
-  const api = new WebIFC.IfcAPI();
-  api.SetWasmPath("/wasm/", true);
-  await api.Init();
+  const api = await getIfcApi();
   const bytes = new Uint8Array(await file.arrayBuffer());
   const modelID = api.OpenModel(bytes);
 

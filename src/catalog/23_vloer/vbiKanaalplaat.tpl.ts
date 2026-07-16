@@ -27,7 +27,7 @@ export const vbiKanaalplaat: ComponentTemplate = {
   isExternal: false,
 
   placementKind: "surface",
-  materialLayers: [{ material: "Beton, prefab", thicknessMm: 200, category: "structure", loadBearing: true }],
+  materialLayers: [{ material: "Beton, prefab", thicknessMm: 200, category: "structure", loadBearing: true, lambda: 2.3 }],
 
   ifcEntity: "IfcSlab",
   ifcPredefinedType: "FLOOR",

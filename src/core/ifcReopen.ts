@@ -1,11 +1,10 @@
 import * as WebIFC from "web-ifc";
+import { getIfcApi } from "./ifcCommon";
 
 /** Leest de O3S_Data-eigenschappen uit een IFC-bestand terug, zodat een eerder
  *  geëxporteerd model weer als bewerkbaar project geopend kan worden (round-trip). */
 export async function readO3sDataFromIfc(bytes: Uint8Array): Promise<any[]> {
-  const api = new WebIFC.IfcAPI();
-  api.SetWasmPath("/wasm/", true);
-  await api.Init();
+  const api = await getIfcApi();
   const modelID = api.OpenModel(bytes);
   const results: any[] = [];
   try {
