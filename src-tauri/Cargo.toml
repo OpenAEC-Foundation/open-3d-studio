@@ -1,6 +1,6 @@
 [package]
 name = "open-3d-studio"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 description = "Open source 3D-modelleerstudio met IFC als native output"
 authors = ["Open 3D Studio contributors"]
 license = "MIT"
@@ -15,6 +15,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+# DWG-export (MPL-2.0, Hakan Aktt). File-level copyleft: MIT-licentie van
+# Open 3D Studio blijft intact, alleen patches aan acadrust-bronbestanden
+# moeten onder MPL-2.0 beschikbaar blijven. Zie NOTICE.md.
+acadrust = "0.4.1"
 
 [profile.release]
 codegen-units = 1

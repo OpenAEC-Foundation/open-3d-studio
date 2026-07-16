@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import * as OBC from "@thatopen/components";
+import { ClipEdges } from "@thatopen/components-front";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { getTemplate, templates } from "../catalog/registry";
 import type {
@@ -99,6 +100,13 @@ export class Studio {
   private dxfRoot = new THREE.Group();
   private previewGroup: THREE.Group | null = null;
   private previewLine: THREE.Line | null = null;
+
+  /** Actieve selectie op een geladen IFC-fragment (fragments.list.get(modelId)). */
+  private selectedFragment: { modelId: string; localId: number } | null = null;
+
+  /** ClipEdges renderer voor het genereren van 2D-doorsnedelijnen op de actieve snijvlak
+   *  (v0.4-S9 productie-slag doorsnedes fase 1). */
+  private clipEdges: ClipEdges | null = null;
 
   currentView: ViewName = "iso";
   currentText = "Tekst";
@@ -487,6 +495,26 @@ export class Studio {
     }
   }
 
+  /** Leest een BCF-bestand (`.bcf`/`.bcfzip`) en toont de topics als statusmelding.
+   *  Volledige round-trip (topics als annotaties op het model) volgt in v0.5. */
+  async importBcf(file: File): Promise<{ topics: number }> {
+    try {
+      const { importBcfZip } = await import("./bcfImport");
+      const bytes = await file.arrayBuffer();
+      const topics = await importBcfZip(bytes);
+      this.setStatus(
+        topics.length > 0
+          ? `BCF ingelezen: ${topics.length} issue(s). Titels: ${topics.slice(0, 3).map((t) => t.title).join(" · ")}${topics.length > 3 ? " …" : ""}`
+          : "BCF ingelezen, maar geen topics gevonden.",
+      );
+      return { topics: topics.length };
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`BCF-import mislukt: ${err instanceof Error ? err.message : String(err)}`);
+      return { topics: 0 };
+    }
+  }
+
   /** Plaatsingen van de AI-assistent doorvoeren (bouwkundige coördinaten, meters). */
   applyAssistantPlacements(
     placements: { templateId: string; start: [number, number]; end: [number, number]; params?: ParamValues }[],
@@ -550,6 +578,34 @@ export class Studio {
     } catch (err) {
       console.error(err);
       this.setStatus("DXF-export mislukt (zie console).");
+    }
+  }
+
+  /** DWG-export (v0.4-S9). Vraagt de Rust-kant om via acadrust een DWG te schrijven;
+   *  bij ontbrekende acadrust-config valt het netjes terug op DXF. */
+  async exportDwg(targetVersion: "r2013" | "r2018" = "r2013") {
+    if (this.elements.length === 0 && this.lines.length === 0 && this.measures.length === 0) {
+      this.setStatus("Niets om naar DWG te exporteren.");
+      return;
+    }
+    try {
+      this.recomputeMerken();
+      const { exportDwg } = await import("./dwgExport");
+      await exportDwg({
+        elements: this.elements,
+        lines: this.lines,
+        measures: this.measures,
+        texts: this.texts,
+        projectName: "open-3d-studio",
+        targetVersion,
+        onFallback: (reason) => {
+          this.setStatus(`DWG niet beschikbaar (${reason.slice(0, 120)}). Terugval: DXF opgeslagen.`);
+        },
+      });
+      this.setStatus(`DWG-export (AutoCAD ${targetVersion === "r2018" ? "2018" : "2013"}) klaar.`);
+    } catch (err) {
+      console.error(err);
+      this.setStatus("DWG-export mislukt (zie console).");
     }
   }
 
@@ -750,7 +806,6 @@ export class Studio {
   placeSectionAt(point: THREE.Vector3) {
     const camDir = new THREE.Vector3();
     this.world.camera.three.getWorldDirection(camDir);
-    // snap de kijkrichting naar de dichtstbijzijnde hoofdas
     const abs = [Math.abs(camDir.x), Math.abs(camDir.y), Math.abs(camDir.z)];
     const axis = abs.indexOf(Math.max(...abs));
     const normal = new THREE.Vector3(
@@ -762,19 +817,62 @@ export class Studio {
     const renderer: THREE.WebGLRenderer = this.world.renderer.three;
     renderer.clippingPlanes = [plane];
     renderer.localClippingEnabled = true;
-    this.setStatus(
-      "Doorsnede actief: alles vóór het klikpunt is weggesneden. Verwijder de doorsnede via het lagenpaneel.",
-    );
+
+    // ClipEdges: echte 2D-poly-lijnen op het snijvlak (v0.4-S9 productie-slag).
+    // Vervangt de stencil-cap-workaround; werkt op alle authored elementen én
+    // op de mesh-representatie van geladen IFC-fragments waar mogelijk.
+    try {
+      this.disposeClipEdges();
+      const edges = new ClipEdges(this.components, plane);
+      edges.world = this.world;
+      edges.visible = true;
+      // Amber lijnstyle op de sectie-poly (Construction Amber, dikke lijn)
+      edges.items.set("cut", {
+        lineMaterial: new THREE.LineBasicMaterial({ color: 0xd97706 }),
+        fillMaterial: new THREE.MeshBasicMaterial({ color: 0xf5e6c4, side: THREE.DoubleSide }),
+        outlineMaterial: null,
+        fillNeedsUpdate: false,
+        offset: 0,
+      } as any);
+      this.clipEdges = edges;
+    } catch (err) {
+      console.warn("ClipEdges kon niet starten:", err);
+    }
+    this.setStatus("Doorsnede actief met snijlijnen (amber). Ruim op via 'Doorsnede verwijderen'.");
   }
 
   clearSection() {
     const renderer: THREE.WebGLRenderer = this.world.renderer.three;
     renderer.clippingPlanes = [];
+    this.disposeClipEdges();
     this.setStatus("Doorsnede verwijderd.");
+  }
+
+  private disposeClipEdges() {
+    if (this.clipEdges) {
+      try {
+        this.clipEdges.visible = false;
+        this.clipEdges.dispose();
+      } catch {
+        /* al gedispose'd */
+      }
+      this.clipEdges = null;
+    }
   }
 
   hasSection(): boolean {
     return (this.world?.renderer?.three?.clippingPlanes?.length ?? 0) > 0;
+  }
+
+  /** Levert een PNG dataURL-snapshot van de huidige 3D-view (voor sheet-preview). */
+  captureViewportPng(): string | null {
+    try {
+      const renderer: THREE.WebGLRenderer = this.world.renderer.three;
+      renderer.render(this.world.scene.three, this.world.camera.three);
+      return renderer.domElement.toDataURL("image/png");
+    } catch {
+      return null;
+    }
   }
 
   // ------------------------------------------------------------------ nulpunt
@@ -1111,6 +1209,15 @@ export class Studio {
     this.emitElements();
   }
 
+  /** Zet de bouwkundige fase (bestaand/nieuw/sloop/tijdelijk) op één element. */
+  setElementPhase(id: string, phase: import("./types").ElementPhase) {
+    const el = this.elements.find((e) => e.id === id);
+    if (!el) return;
+    this.pushUndo();
+    el.phase = phase;
+    this.emitElements();
+  }
+
   removeElement(id: string) {
     this.pushUndo();
     this.elements = this.elements.filter((e) => e.id !== id);
@@ -1154,6 +1261,14 @@ export class Studio {
     dom.addEventListener("pointerdown", (e: PointerEvent) => {
       if (e.button !== 0) return;
       this.pointerDownPos = { x: e.clientX, y: e.clientY };
+      // pointer-capture: pointermove/up worden altijd naar `dom` gerouteerd, ook als de
+      // cursor tijdens het slepen buiten het canvas beweegt. Dat maakt de e.target-check
+      // op pointerup betrouwbaar (voorheen kon een HTML-overlay de klik "opeten").
+      try {
+        dom.setPointerCapture(e.pointerId);
+      } catch {
+        /* oudere browsers zonder pointer capture — negeren */
+      }
       // verslepen: in selecteermodus met de muis op het geselecteerde element
       if (this.tool === "select" && this.selectedId) {
         const hit = this.raycastGroups(e, [this.authoredGroup]);
@@ -1170,9 +1285,15 @@ export class Studio {
       }
     });
 
-    // op window, zodat loslaten búíten het canvas de sleep ook netjes beëindigt
-    window.addEventListener("pointerup", (e: PointerEvent) => {
+    // luisteren op het canvas: door setPointerCapture komen alle up-events hier binnen,
+    // ook als de cursor buiten het canvas is losgelaten.
+    dom.addEventListener("pointerup", (e: PointerEvent) => {
       if (e.button !== 0) return;
+      try {
+        dom.releasePointerCapture(e.pointerId);
+      } catch {
+        /* al vrijgegeven — negeren */
+      }
       if (this.dragging) {
         this.dragging = false;
         this.dragLast = null;
@@ -1187,7 +1308,7 @@ export class Studio {
       if (!this.pointerDownPos) return;
       const moved = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
       this.pointerDownPos = null;
-      if (moved > 5 || e.target !== dom) return; // slepen = camera; klik moet op het canvas eindigen
+      if (moved > 5) return; // slepen = camera; korte klik = selecteren
       this.handleClick(e);
     });
 
@@ -1270,13 +1391,26 @@ export class Studio {
   }
 
   private handleClick(e: PointerEvent) {
+    // Alleen handleSelectClick (default) is async — de rest blijft synchroon.
     switch (this.tool) {
       case "draw": {
         const point = this.pickPoint(e);
         if (!point) return;
+        // Point-placement (kolom, poer, paal, dakraam): één klik plaatst het element.
+        // De solids-functie negeert de segment-lengte, dus we geven een dummy end.
+        const tpl = getTemplate(this.activeTemplateId);
+        if (tpl.placementKind === "point") {
+          const dummyEnd = point.clone().add(new THREE.Vector3(0.01, 0, 0));
+          this.commitComponent(point, dummyEnd);
+          break;
+        }
         if (!this.drawStart) {
           this.drawStart = point.clone();
-          this.setStatus("Klik het eindpunt.");
+          this.setStatus(
+            tpl.placementKind === "surface"
+              ? "Klik het tegenoverliggende hoekpunt van de vloer/dak."
+              : "Klik het eindpunt.",
+          );
         } else {
           this.commitComponent(this.drawStart, point);
         }
@@ -1358,7 +1492,7 @@ export class Studio {
         break;
       }
       default:
-        this.handleSelectClick(e);
+        void this.handleSelectClick(e);
     }
   }
 
@@ -1425,15 +1559,79 @@ export class Studio {
     this.setStatus(`Cirkel geplaatst (r = ${(radius * 1000).toFixed(0)} mm).`);
   }
 
-  private handleSelectClick(e: PointerEvent) {
+  private async handleSelectClick(e: PointerEvent) {
+    // 1. Zelfgetekend element? Synchrone raycast tegen authoredGroup.
     const hit = this.raycastGroups(e, [this.authoredGroup]);
-    if (!hit) {
-      this.selectElement(null);
-      return;
+    if (hit) {
+      let obj: THREE.Object3D | null = hit.object;
+      while (obj && !obj.userData.elementId) obj = obj.parent;
+      if (obj?.userData.elementId) {
+        await this.clearFragmentSelection();
+        this.selectElement(obj.userData.elementId);
+        return;
+      }
     }
-    let obj: THREE.Object3D | null = hit.object;
-    while (obj && !obj.userData.elementId) obj = obj.parent;
-    this.selectElement(obj?.userData.elementId ?? null);
+
+    // 2. Geladen IFC-fragment? Async raycast via de fragments-native API
+    //    (@thatopen/fragments 3.4.6 — model.raycast + model.highlight).
+    const dom: HTMLElement = this.world.renderer.three.domElement;
+    const mouse = new THREE.Vector2(e.clientX, e.clientY);
+    const camera = this.world.camera.three;
+    for (const info of this.models) {
+      const model: any = this.fragments.list.get(info.id);
+      if (!model?.object?.visible) continue;
+      try {
+        const result = await model.raycast({ mouse, camera, dom });
+        const localId = result?.localId;
+        if (localId !== undefined && localId !== null) {
+          await this.selectFragment(info.id, localId);
+          return;
+        }
+      } catch (err) {
+        console.warn(`IFC-raycast op ${info.id} mislukt:`, err);
+      }
+    }
+
+    // 3. Leegte geraakt → alles deselecteren.
+    await this.clearFragmentSelection();
+    this.selectElement(null);
+  }
+
+  /** Selecteert één item uit een geladen IFC-fragment en accentueert het amber. */
+  private async selectFragment(modelId: string, localId: number) {
+    await this.clearFragmentSelection();
+    this.selectElement(null); // authored-selectie los
+    const model: any = this.fragments.list.get(modelId);
+    if (!model) return;
+    try {
+      const mat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color("#d97706"),
+        transparent: true,
+        opacity: 0.6,
+        depthTest: false,
+      });
+      await model.highlight([localId], mat);
+      this.selectedFragment = { modelId, localId };
+      this.fragments?.core?.update?.(true);
+      this.setStatus(`IFC-element geselecteerd — model "${modelId}", localId ${localId}.`);
+    } catch (err) {
+      console.warn("Fragment highlighten mislukt:", err);
+    }
+  }
+
+  /** Herstelt de fragment-selectie naar het originele materiaal. */
+  private async clearFragmentSelection() {
+    if (!this.selectedFragment) return;
+    const { modelId, localId } = this.selectedFragment;
+    this.selectedFragment = null;
+    const model: any = this.fragments?.list.get(modelId);
+    if (!model) return;
+    try {
+      await model.resetHighlight?.([localId]);
+      this.fragments?.core?.update?.(true);
+    } catch {
+      /* al vrijgegeven of model dispose'd */
+    }
   }
 
   /** Sleeppunt: altijd op het horizontale vlak van het element zelf, zodat de
@@ -1523,6 +1721,11 @@ export class Studio {
     }
     const built = this.buildComponentGroup(this.drawStart, end, this.currentParams, { preview: true });
     if (built) {
+      // preview-geometrie mag NIET geraycast worden: anders zit hij tussen de cursor en het
+      // echte element, en selecteren voelt kapot omdat de preview de klik opeet.
+      built.traverse((o) => {
+        (o as THREE.Mesh).raycast = () => {};
+      });
       this.previewGroup = built;
       this.authoredGroup.add(built);
     }
@@ -1550,12 +1753,13 @@ export class Studio {
 
   private commitComponent(start: THREE.Vector3, end: THREE.Vector3) {
     const length = Math.hypot(end.x - start.x, end.z - start.z);
-    if (length < 0.05) {
+    const template = getTemplate(this.activeTemplateId);
+    // Point-placement: geen minimum-lengte-check, één klik is genoeg.
+    if (template.placementKind !== "point" && length < 0.05) {
       this.setStatus("Element te kort — klik een eindpunt verder van het startpunt.");
       return;
     }
     this.pushUndo();
-    const template = getTemplate(this.activeTemplateId);
     const n = (this.elementCounters.get(template.id) ?? 0) + 1;
     this.elementCounters.set(template.id, n);
     const el: PlacedElement = {
@@ -1567,15 +1771,45 @@ export class Studio {
       params: { ...this.currentParams },
       storeyId: this.activeStoreyId,
       opening: null,
+      phase: "new",
     };
+    // Hosting-relatie: bij deuren/ramen zoeken we de wand-onder-cursor en
+    // koppelen die als host (PlacedElement.hostId). Zonder host wordt het
+    // gewoon een los kozijn — bruikbaar tot de host-flow volledig is uitgerold.
+    if (template.ifcEntity === "IfcDoor" || template.ifcEntity === "IfcWindow") {
+      const hostId = this.findHostAt(start.clone().lerp(end, 0.5));
+      if (hostId) el.hostId = hostId;
+    }
     this.elements.push(el);
     this.drawStart = null;
     this.lastMovePoint = null;
     this.rebuildAuthored();
     this.emitElements();
-    this.setStatus(
-      `${el.name} geplaatst (lengte ${(length * 1000).toFixed(0)} mm). Klik een nieuw startpunt of druk op Esc.`,
-    );
+    const suffix = el.hostId ? " (gekoppeld aan host-wand)" : "";
+    const lm = template.placementKind === "point" ? "punt" : `${(length * 1000).toFixed(0)} mm`;
+    this.setStatus(`${el.name} geplaatst (${lm})${suffix}. Klik opnieuw of druk Esc.`);
+  }
+
+  /** Zoekt de wand die op of vlakbij `point` staat (voor host-koppeling van kozijnen). */
+  private findHostAt(point: THREE.Vector3): string | null {
+    for (const el of this.elements) {
+      const t = getTemplate(el.templateId);
+      if (t.ifcEntity !== "IfcWall") continue;
+      // Ligt `point` binnen een kleine tolerantie langs de wand-as?
+      const dx = el.end.x - el.start.x;
+      const dz = el.end.z - el.start.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 1e-6) continue;
+      const ux = dx / len;
+      const uz = dz / len;
+      const rx = point.x - el.start.x;
+      const rz = point.z - el.start.z;
+      const along = rx * ux + rz * uz;
+      const across = Math.abs(rx * uz - rz * ux);
+      const depth = t.depth(el.params);
+      if (along >= -0.3 && along <= len + 0.3 && across <= depth) return el.id;
+    }
+    return null;
   }
 
   private cancelDrawing() {

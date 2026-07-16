@@ -3,6 +3,8 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 
+mod dwg;
+
 /// 8 MB binaire chunks: voorkomt de V8-stringlimiet bij grote IFC-bestanden.
 const CHUNK: usize = 8 * 1024 * 1024;
 
@@ -33,7 +35,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_file_b64_chunks,
-            write_file_b64_chunks
+            write_file_b64_chunks,
+            dwg::export_dwg
         ])
         .run(tauri::generate_context!())
         .expect("fout bij het starten van Open 3D Studio");

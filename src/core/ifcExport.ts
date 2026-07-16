@@ -2,6 +2,8 @@ import * as WebIFC from "web-ifc";
 import type { GridConfig, PlacedElement, ProjectOrigin, Storey } from "./types";
 import { getTemplate } from "../catalog/registry";
 import { elementSolids } from "./meshBuilder";
+import { entityMakers, makeCommonProps } from "./ifcEntityMap";
+import { commonPsetFor } from "./psetFactories";
 
 const { IFC4 } = WebIFC;
 
@@ -231,6 +233,10 @@ export async function exportElementsToIfc(
   const byMaterial = new Map<string, IfcProductInstance[]>();
   const byStorey = new Map<string, IfcProductInstance[]>();
   const byType = new Map<string, { products: IfcProductInstance[]; template: ReturnType<typeof getTemplate>; merk: string }>();
+  // v0.4-productie: index element → product-instantie, gebruikt voor
+  // MaterialLayerSet-koppeling en RelFillsElement (kozijnen-hosting).
+  const productByElementId = new Map<string, IfcProductInstance>();
+  const templateByElementId = new Map<string, ReturnType<typeof getTemplate>>();
 
   for (const el of elements) {
     const template = getTemplate(el.templateId);
@@ -256,7 +262,8 @@ export async function exportElementsToIfc(
     // geometrie: dezelfde solids-definitie als de 3D-weergave (incl. sparing)
     const items: InstanceType<typeof IFC4.IfcExtrudedAreaSolid>[] = [];
     const colorHex = template.color(el.params);
-    for (const s of elementSolids(template, length, el.params, el.opening)) {
+    const solids = elementSolids(template, length, el.params, el.opening);
+    for (const s of solids) {
       const profile = new IFC4.IfcRectangleProfileDef(
         IFC4.IfcProfileTypeEnum.AREA,
         null,
@@ -293,26 +300,16 @@ export async function exportElementsToIfc(
       shape,
       null,
     ] as const;
-    // LoadBearing/IsExternal per template instelbaar (BIM basis ILS); standaard false
-    const loadBearing = template.loadBearing ?? false;
-    const isExternal = template.isExternal ?? false;
-    let product: IfcProductInstance;
-    let commonPset: { name: string; props: Record<string, boolean> };
-    switch (template.ifcEntity) {
-      case "IfcBeam":
-        product = new IFC4.IfcBeam(...common, IFC4.IfcBeamTypeEnum.BEAM);
-        commonPset = { name: "Pset_BeamCommon", props: { LoadBearing: loadBearing, IsExternal: isExternal } };
-        break;
-      case "IfcPlate":
-        // USERDEFINED + ObjectType: een roosterpaneel is geen vliesgevelpaneel
-        product = new IFC4.IfcPlate(...common, IFC4.IfcPlateTypeEnum.USERDEFINED);
-        commonPset = { name: "Pset_PlateCommon", props: { LoadBearing: loadBearing, IsExternal: isExternal } };
-        break;
-      default:
-        product = new IFC4.IfcWall(...common, IFC4.IfcWallTypeEnum.USERDEFINED);
-        commonPset = { name: "Pset_WallCommon", props: { LoadBearing: loadBearing, IsExternal: isExternal } };
-    }
+    // Generieke entity-mapper (v0.4-S1) — dekt alle 14 IFC-entiteiten in de v0.4-bibliotheek
+    // met correcte PredefinedType en Common-Pset per entity (BIM basis ILS eis 3 en 7).
+    const makers = entityMakers(template, solids);
+    const product = makers.product([...common] as any[]);
+    const commonPsetInfo = commonPsetFor(template, length, el.params);
+    // Merge: mapper levert entity-specifieke pset-naam; factory levert de props.
+    const commonPset = { name: makers.psetName, props: commonPsetInfo.props };
     products.push(product);
+    productByElementId.set(el.id, product);
+    templateByElementId.set(el.id, template);
     const storeyKey = el.storeyId && storeyMap.has(el.storeyId) ? el.storeyId : storeys[0].id;
     byStorey.set(storeyKey, [...(byStorey.get(storeyKey) ?? []), product]);
 
@@ -411,10 +408,10 @@ export async function exportElementsToIfc(
       new IFC4.IfcRelDefinesByProperties(guid(), ownerHistory, null, null, [product], pset),
     );
 
-    // standaard-pset (LoadBearing/IsExternal) conform BIM basis ILS
-    const commonProps = Object.entries(commonPset.props).map(
-      ([key, value]) =>
-        new IFC4.IfcPropertySingleValue(ident(key), null, new IFC4.IfcBoolean(value), null),
+    // standaard-pset (LoadBearing/IsExternal/FireRating/…) conform BIM basis ILS v2.
+    // Waardetypen: string→IfcLabel, number→IfcReal, boolean→IfcBoolean.
+    const commonProps = makeCommonProps(commonPset.props).map(
+      ({ key, value }) => new IFC4.IfcPropertySingleValue(ident(key), null, value, null),
     );
     relRoots.push(
       new IFC4.IfcRelDefinesByProperties(
@@ -473,6 +470,198 @@ export async function exportElementsToIfc(
     );
   }
 
+  // -- v0.4-productie: MaterialLayerSet voor meerlaagse elementen (BIM basis ILS eis 6) --
+  const materialCache = new Map<string, InstanceType<typeof IFC4.IfcMaterial>>();
+  const getIfcMaterial = (materialName: string) => {
+    if (!materialCache.has(materialName)) {
+      materialCache.set(materialName, new IFC4.IfcMaterial(label(materialName), null, null));
+    }
+    return materialCache.get(materialName)!;
+  };
+  for (const el of elements) {
+    const template = templateByElementId.get(el.id);
+    const product = productByElementId.get(el.id);
+    if (!template || !product) continue;
+    if (!template.materialLayers || template.materialLayers.length === 0) continue;
+    const layers = template.materialLayers.map(
+      (layer) =>
+        new IFC4.IfcMaterialLayer(
+          getIfcMaterial(layer.material),
+          plen(layer.thicknessMm * MM),
+          layer.isVentilated !== undefined ? new IFC4.IfcLogical(layer.isVentilated) : null,
+          label(layer.material),
+          null,
+          layer.category ? label(layer.category) : null,
+          null,
+        ),
+    );
+    const layerSet = new IFC4.IfcMaterialLayerSet(layers, label(`${template.name} lagen`), null);
+    const usage = new IFC4.IfcMaterialLayerSetUsage(
+      layerSet,
+      IFC4.IfcLayerSetDirectionEnum.AXIS2,
+      IFC4.IfcDirectionSenseEnum.POSITIVE,
+      new IFC4.IfcLengthMeasure(-template.depth(el.params) / 2),
+      null,
+    );
+    relRoots.push(
+      new IFC4.IfcRelAssociatesMaterial(
+        guid(),
+        ownerHistory,
+        label("MaterialLayerSet"),
+        null,
+        [product],
+        usage,
+      ),
+    );
+  }
+
+  // -- v0.4-productie: MaterialProfileSetUsage voor staal/hout/beton profielen --
+  for (const el of elements) {
+    const template = templateByElementId.get(el.id);
+    const product = productByElementId.get(el.id);
+    if (!template || !product) continue;
+    if (!template.profileSpec) continue;
+    const spec = template.profileSpec;
+    const d = spec.dimensions;
+    const p2 = new IFC4.IfcAxis2Placement2D(pt2(0, 0), null);
+    let profileDef: any;
+    switch (spec.shape) {
+      case "IShape":
+        profileDef = new IFC4.IfcIShapeProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+          plen((d.OverallWidth ?? 100) * MM),
+          plen((d.OverallDepth ?? 200) * MM),
+          plen((d.WebThickness ?? 6) * MM),
+          plen((d.FlangeThickness ?? 10) * MM),
+          d.FilletRadius ? plen(d.FilletRadius * MM) : null,
+          null, null,
+        );
+        break;
+      case "UShape":
+        profileDef = new IFC4.IfcUShapeProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+          plen((d.OverallDepth ?? 100) * MM),
+          plen((d.FlangeWidth ?? 50) * MM),
+          plen((d.WebThickness ?? 6) * MM),
+          plen((d.FlangeThickness ?? 10) * MM),
+          d.FilletRadius ? plen(d.FilletRadius * MM) : null,
+          null, null,
+        );
+        break;
+      case "LShape":
+        profileDef = new IFC4.IfcLShapeProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+          plen((d.Depth ?? 50) * MM),
+          plen((d.Width ?? 50) * MM),
+          plen((d.Thickness ?? 5) * MM),
+          d.FilletRadius ? plen(d.FilletRadius * MM) : null,
+          null, null,
+        );
+        break;
+      case "RectangleHollow":
+        profileDef = new IFC4.IfcRectangleHollowProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+          plen((d.XDim ?? 100) * MM),
+          plen((d.YDim ?? 100) * MM),
+          plen((d.WallThickness ?? 5) * MM),
+          null, null,
+        );
+        break;
+      case "CircleHollow":
+        profileDef = new IFC4.IfcCircleHollowProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+          plen((d.Radius ?? 100) * MM),
+          plen((d.WallThickness ?? 5) * MM),
+        );
+        break;
+      case "Rectangle":
+        profileDef = new IFC4.IfcRectangleProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+          plen((d.XDim ?? 200) * MM),
+          plen((d.YDim ?? 100) * MM),
+        );
+        break;
+      case "Circle":
+        profileDef = new IFC4.IfcCircleProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+          plen((d.Radius ?? 100) * MM),
+        );
+        break;
+      default:
+        continue;
+    }
+    const materialName = template.material ?? "Staal S235";
+    const matProfile = new IFC4.IfcMaterialProfile(
+      label(spec.designation), null, getIfcMaterial(materialName), profileDef, null, null,
+    );
+    const matProfileSet = new IFC4.IfcMaterialProfileSet(
+      label(`${spec.designation} set`), null, [matProfile], null,
+    );
+    const usage = new IFC4.IfcMaterialProfileSetUsage(matProfileSet, null, null);
+    relRoots.push(
+      new IFC4.IfcRelAssociatesMaterial(
+        guid(),
+        ownerHistory,
+        label("MaterialProfileSetUsage"),
+        null,
+        [product],
+        usage,
+      ),
+    );
+  }
+
+  // -- v0.4-productie: hosting-relatie voor deuren/ramen (IfcRelFillsElement) --
+  for (const el of elements) {
+    if (!el.hostId) continue;
+    const template = templateByElementId.get(el.id);
+    if (!template) continue;
+    if (template.ifcEntity !== "IfcDoor" && template.ifcEntity !== "IfcWindow") continue;
+    const filling = productByElementId.get(el.id);
+    const host = productByElementId.get(el.hostId);
+    const hostTemplate = templateByElementId.get(el.hostId);
+    if (!filling || !host || !hostTemplate) continue;
+
+    // Opening in de host-wand: rechthoekige uitsparing met kozijn-envelope-maten.
+    const solids = elementSolids(template, 1, el.params, el.opening);
+    let width = 0, height = 0;
+    for (const s of solids) {
+      width = Math.max(width, s.dx);
+      height = Math.max(height, s.zBottom + s.dz);
+    }
+    if (width < 0.05 || height < 0.05) continue;
+    const hostDepth = hostTemplate.depth(el.params) + 0.02;
+    // Positioneer opening op midden van het kozijn geprojecteerd op de wand-as.
+    const openingPlacement = new IFC4.IfcLocalPlacement(
+      host.ObjectPlacement ?? null,
+      new IFC4.IfcAxis2Placement3D(pt3(width / 2, 0, 0), null, null),
+    );
+    const openingSolid = new IFC4.IfcExtrudedAreaSolid(
+      new IFC4.IfcRectangleProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, null,
+        new IFC4.IfcAxis2Placement2D(pt2(0, 0), null),
+        plen(width), plen(hostDepth),
+      ),
+      new IFC4.IfcAxis2Placement3D(pt3(0, 0, 0), null, null),
+      dir3(0, 0, 1), plen(height),
+    );
+    const openingElement = new IFC4.IfcOpeningElement(
+      guid(), ownerHistory,
+      label(`Sparing voor ${el.name}`), null, null,
+      openingPlacement,
+      new IFC4.IfcProductDefinitionShape(null, null, [
+        new IFC4.IfcShapeRepresentation(context, label("Body"), label("SweptSolid"), [openingSolid]),
+      ]),
+      null,
+      IFC4.IfcOpeningElementTypeEnum.OPENING,
+    );
+    relRoots.push(
+      new IFC4.IfcRelVoidsElement(guid(), ownerHistory, null, null, host, openingElement),
+    );
+    relRoots.push(
+      new IFC4.IfcRelFillsElement(guid(), ownerHistory, null, null, openingElement, filling),
+    );
+  }
+
   // -- relaties (schrijven vanaf de wortels; WriteLine schrijft genest alles weg) --
   api.WriteLine(modelID, project);
   api.WriteLine(
@@ -521,17 +710,9 @@ export async function exportElementsToIfc(
     const typeArgs = [
       guid(), ownerHistory, typeName, null, null, null, null, null, label(t.name),
     ] as const;
-    let typeEntity;
-    switch (t.ifcEntity) {
-      case "IfcBeam":
-        typeEntity = new IFC4.IfcBeamType(...typeArgs, IFC4.IfcBeamTypeEnum.BEAM);
-        break;
-      case "IfcPlate":
-        typeEntity = new IFC4.IfcPlateType(...typeArgs, IFC4.IfcPlateTypeEnum.USERDEFINED);
-        break;
-      default:
-        typeEntity = new IFC4.IfcWallType(...typeArgs, IFC4.IfcWallTypeEnum.USERDEFINED);
-    }
+    // Generieke type-factory via entity-mapper (v0.4-S1).
+    const typeMakers = entityMakers(t, t.solids(1, t.defaults));
+    const typeEntity = typeMakers.type([...typeArgs] as any[]);
     api.WriteLine(
       modelID,
       new IFC4.IfcRelDefinesByType(guid(), ownerHistory, null, null, group.products, typeEntity),

@@ -1,3 +1,16 @@
+/* Sheet-preview MVP (v0.4-S9-productie) */
+.sheet-preview-wrap { margin: 12px 0; }
+.sheet-preview-svg {
+  width: 100%;
+  height: auto;
+  max-height: 380px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  display: block;
+}
+.sheet-preview-hint { margin-top: 6px; font-size: 11px; }
+
 /* Open 3D Studio — huisstijl volgens het OpenAEC style book
    Primair: Construction Amber #D97706 · koppen Space Grotesk · lopende tekst Inter */
 
@@ -97,6 +110,50 @@ body {
 .header-note {
   color: var(--text-muted);
   font-size: 11px;
+}
+
+/* ---------- QAT: undo/redo in header ---------- */
+.qat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 12px;
+  padding: 0 8px;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  height: 28px;
+}
+
+.qat-btn {
+  width: 28px;
+  height: 24px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.qat-btn:hover {
+  background: var(--bg-input);
+  border-color: var(--border);
+  color: var(--amber);
+}
+
+.qat-btn:active {
+  transform: translateY(1px);
+}
+
+.qat-btn:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 1px;
 }
 
 /* ---------- ribbon ---------- */

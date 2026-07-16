@@ -5,6 +5,7 @@ import type { GridConfig, LoadedModelInfo, ParamValues, PlacedElement, Sheet, St
 import { openFilesDialog, saveFileAs } from "./core/fileio";
 import { ParamsPanel } from "./ui/ParamsPanel";
 import { Ribbon, type RibbonTab } from "./ui/Ribbon";
+import { SheetPreview } from "./ui/SheetPreview";
 import { makeT, type Lang } from "./ui/i18n";
 
 interface QtyRow {
@@ -341,6 +342,8 @@ export default function App() {
             { id: "stl", icon: "▲", label: t("btnExportStl"), onClick: () => studio()?.exportStl() },
             { id: "pdf", icon: "⎙", label: t("btnExportPdf"), onClick: () => studio()?.exportPdf(viewLabels[view]) },
             { id: "dxf", icon: "▱", label: t("btnExportDxf"), onClick: () => studio()?.exportDxf() },
+            { id: "dwg13", icon: "▤", label: "DWG (2013)", onClick: () => studio()?.exportDwg("r2013") },
+            { id: "dwg18", icon: "▥", label: "DWG (2018) exp.", title: "Experimental — vereist acadrust ≥ 0.5", onClick: () => studio()?.exportDwg("r2018") },
             { id: "prod", icon: "⚙", label: t("btnProductie"), onClick: () => studio()?.exportElementeerRapport(maxPaneel) },
             { id: "csv", icon: "▦", label: t("btnExportCsv"), onClick: exportCsv },
           ],
@@ -359,6 +362,18 @@ export default function App() {
               icon: "◉",
               label: t("btnBcf"),
               onClick: () => studio()?.exportBcf(textValue !== "Tekst" ? textValue : ""),
+            },
+            {
+              id: "bcfImport",
+              icon: "⇢",
+              label: "BCF importeren",
+              onClick: async () => {
+                const files = await openFilesDialog(
+                  [{ name: "BCF", extensions: ["bcf", "bcfzip"] }],
+                  false,
+                );
+                if (files.length) await studio()?.importBcf(files[0]);
+              },
             },
           ],
         },
@@ -451,6 +466,24 @@ export default function App() {
           <span className="brand-mark" />
           <h1>Open 3D Studio</h1>
           <span className="badge">OpenAEC · IFC-native</span>
+        </div>
+        <div className="qat" role="toolbar" aria-label={t("btnUndo") + " / " + t("btnRedo")}>
+          <button
+            className="qat-btn"
+            title={`${t("btnUndo")}  (Ctrl+Z)`}
+            aria-label={t("btnUndo")}
+            onClick={() => studio()?.undo()}
+          >
+            ↶
+          </button>
+          <button
+            className="qat-btn"
+            title={`${t("btnRedo")}  (Ctrl+Y)`}
+            aria-label={t("btnRedo")}
+            onClick={() => studio()?.redo()}
+          >
+            ↷
+          </button>
         </div>
         <span className="header-note">open source · That Open Engine</span>
       </header>
@@ -599,6 +632,23 @@ export default function App() {
                     ))}
                   </>
                 )}
+                <label className="param-row">
+                  <span>Bouwkundige fase</span>
+                  <select
+                    value={selected.phase ?? "new"}
+                    onChange={(e) =>
+                      studio()?.setElementPhase(
+                        selected.id,
+                        e.target.value as "existing" | "new" | "demolished" | "temporary",
+                      )
+                    }
+                  >
+                    <option value="new">Nieuwbouw</option>
+                    <option value="existing">Bestaand</option>
+                    <option value="demolished">Te slopen</option>
+                    <option value="temporary">Tijdelijk</option>
+                  </select>
+                </label>
                 <button className="danger" onClick={() => studio()?.removeElement(selected.id)}>
                   {t("deleteElement")}
                 </button>
@@ -879,6 +929,11 @@ export default function App() {
                   </select>
                 </label>
 
+                <SheetPreview
+                  sheet={activeSheet}
+                  onViewportsChange={(vps) => updateSheet(activeSheet.id, { viewports: vps })}
+                  captureSnapshot={() => studio()?.captureViewportPng() ?? null}
+                />
                 <p className="muted">{t("viewportsHint")}</p>
                 {activeSheet.viewports.map((vp, i) => (
                   <div className="viewport-row" key={i}>

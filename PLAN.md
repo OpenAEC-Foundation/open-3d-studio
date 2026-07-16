@@ -1,11 +1,15 @@
 # Studie & plan — de grote sprong van Open 3D Studio
 
-*Versie 1.1 — juli 2026. Levend document: prioriteiten schuiven op basis van testervaringen.*
+*Versie 1.3 — juli 2026. Levend document: prioriteiten schuiven op basis van testervaringen.*
 
-> **Stand v0.3.0**: alle vier de fasen zijn in eerste werkende versie uitgevoerd, met vier
-> bewuste uitzonderingen: native DWG (Rust/WASM-project), code signing (certificaat vereist),
-> auto-update (sleutelbeheer) en volledige meertaligheid van statusmeldingen. Zie
-> [RELEASE_NOTES.md](RELEASE_NOTES.md) voor wat er per fase is opgeleverd.
+> **Stand v0.4.0-rc (2026-07-16)**: alle 9 sprints uit versie 1.2 werkend + de productie-diepgang.
+> **40 templates** verspreid over 16 NL-SfB-categorieën, **14 IFC-entiteiten**, alle 4 placement-kinds
+> bewezen (linear/point/surface/assembly), **198 constructieprofielen** in de catalogus. IFC-export
+> gaat door de generieke entity-mapper met `PredefinedType`, `IfcMaterialLayerSetUsage`,
+> `IfcMaterialProfileSetUsage` en `IfcRelFillsElement` voor hosting. DWG-export live via
+> `acadrust` 0.4.1 (MPL-2.0) in de Tauri-backend. BCF 3.0 import + export met `jszip`.
+> ClipEdges snijlijnen bij doorsnedes. Sheet-preview MVP met SVG-paper en sleepbare viewports.
+> Fase Nul (fragments-native selectie via Highlighter + undo/redo in header) was al af.
 
 Dit document analyseert wat Open 3D Studio kan leren van vier gevestigde modelleerpakketten
 (Revit, Tekla Structures, HSBcad, Blender/Bonsai), toetst de huidige stand aan de
@@ -150,3 +154,133 @@ Status per eis en wat het plan eraan doet:
 
 **Voorgestelde eerste stap**: Fase 1, punten 1–3 (verdiepingen, stramienen, IfcTypes) —
 dat zijn de fundamenten waar alle latere functies op rusten én de grootste ILS-gaten.
+
+---
+
+## 5. Roadmap v0.4 → v1.0 (na overleg 2026-07-15)
+
+Vastgelegd op basis van 12 beslissingen in het overleg met Martijn. Zie ook de
+overleg-artefacten (`beslissingen-v04.md` in memory).
+
+### v0.4.0 — Fase Nul (P0, blokkerend) · ≈1 week
+
+1. **Muis-selectie fixen** — `setPointerCapture` in pointerdown, robuustere `e.target`-check,
+   preview-Group met `raycast = () => {}`. Voor IFC-modellen: `Highlighter` uit
+   `@thatopen/components-front` 3.4.3 (zit al in `package.json`), of `model.raycast()`
+   direct als de UX-eisen strenger worden.
+2. **Undo/redo-knoppen in header** — met dropdown-historie van laatste ~20 acties;
+   camera-navigatie expliciet uit de undo-stack.
+
+### v0.4-Sprint 1 — Architectuur-refactor · 2 weken
+
+`types.ts` uitbreiden: `PlacementKind` (`linear`/`point`/`surface`/`assembly`),
+`MaterialLayer[]`, `ProfileSpec`, uitgebreide `ifcEntity`-union met `predefinedType?`,
+`hostId`/`spaceId`/`phase` op `PlacedElement`. Catalog-refactor naar NL-SfB-directories
+met `import.meta.glob('./**/*.tpl.ts', { eager: true })`. Common-Pset-factories
+(`makeWallCommonPset()` etc.) — verplicht per `ifcEntity`, factory vult defaults,
+template overschrijft afwijkingen. Storax-drieluik verhuist backwards-compatible naar
+`22_binnenwand/`.
+
+### v0.4-Sprint 2 — SurfaceTemplate + 5 vloeren · 2 weken
+
+VBI kanaalplaat 150/200/260/320/400 (ILS v1.0 conform), breedplaatvloer, HSB-vloer,
+staalplaatbeton, MV-plaat. `Pset_SlabCommon` verplicht. VBI-partnership documenteren.
+
+### v0.4-Sprint 3 — LinearTemplate + MaterialLayer + 6 wanden · 2 weken
+
+KZS Silka, cellenbeton Ytong, HSB, staalframe, prefab beton, metal-stud gips.
+Xella-ILS-conformiteit checken.
+
+### v0.4-Sprint 4 — ProfileSpec + staal + beton + hout · 1–2 weken
+
+Eén staal-template met `profielCatalogus`-select levert 300+ profielen (IPE/HEA/HEB/HEM/UNP/
+koker/buis/L/C/T/Z). NEN-EN 10365 als `_shared/profiles.ts` data-import.
+`IfcMaterialProfileSetUsage`. Plus 2 beton (kolom, balk) en 2 hout (glulam kolom, balk).
+
+### v0.4-Sprint 5 — Openings met echte hosting · 2–3 weken
+
+`IfcOpeningElement` + `IfcRelVoidsElement` + `IfcRelFillsElement`. Vervangt huidige
+"dumb" Opening-record. 6 templates: draai-kiep, vast, dakraam Velux, voordeur,
+binnendeur, brandwerend. `Pset_WindowCommon` / `Pset_DoorCommon` via factory.
+
+### v0.4-Sprint 6 — AssemblyTemplate + trap + dak · 2–3 weken
+
+Rechte trap (`STRAIGHT_RUN_STAIR`) en 2-kwart (`QUARTER_TURN_STAIR`) als eerste
+multi-entiteit-template: `IfcStair` + `IfcStairFlight` + `IfcSlab.LANDING` + `IfcRailing`.
+Bewijst het mechanisme voor dakkapel/kozijn/spouwmuur. Plus 3 daken: plat, hellend
+HSB (20–60° param), prefab.
+
+### v0.4-Sprint 7 — Fundering + coverings · 2 weken
+
+Strook (`STRIP_FOOTING`), poer (`PAD_FOOTING`), prefab paal (`IfcPile` ConstructionType=
+`PRECAST_CONCRETE`). Plus 4 coverings: baksteen halfsteens, systeemplafond, dekvloer,
+ETICS. `IfcCovering` met host-relatie via `hostId`.
+
+### v0.4-Sprint 8 — Railings + IfcSpace/NEN 2580 + fasering · 1–2 weken
+
+2 railings (spijl, glas). `IfcSpace` polygonaal met NEN 2580-oppervlakteberekening
+(GBO, aftrek liftschacht ≥4 m², vrije hoogte <1,5 m). Meetinstructie GBO Woningen
+(BBMI) als referentie. Fasering `existing`/`new`/`demolished`/`temporary` op
+`PlacedElement` (data-shape zit al in S1-refactor).
+
+### v0.4-Sprint 9 — DWG + bSDD + BCF-import + conditional geometry · 2 weken
+
+**DWG-export** via `acadrust` (MPL-2.0, Rust) als Cargo-dep in `src-tauri/`. Rust-module
+`src-tauri/src/dwg.rs` met Tauri-command `export_dwg(dxf_content, target_version, out_path)`.
+Default AC1027 (AutoCAD 2013), R2018 als "experimental". `NOTICE.md` + About-dialoog.
+CI-smoke-test round-trip.
+
+**bSDD REST-picker** naast vrije NL-SfB-string (offline-fallback). `IfcClassificationReference`
+met `Location`-URL.
+
+**BCF 3.0 import** met viewpoints + comments + status-update. `bcfExport.ts` uitbreiden.
+
+**Conditional geometry** — `visibleWhen: (p) => boolean` en `formula: (p) => value` op
+`ParamDef`. Eén wandtemplate kan variant-set met/zonder isolatie leveren.
+
+### v0.5 — Professionalisering · ≈13 weken (H2 2026 → Q1 2027)
+
+- **IDS-input engine** (4–6w): buildingSMART XML-parser + generieke rule-engine over
+  IFC-tree; vervangt hardcoded `ILSCheck`. Directe aansluiting op BIM Loket ILS Configurator.
+- **Sheet-views met callout-verwijzing + associatieve maatvoering** (6–8w): view op sheet,
+  automatische detail-nummer + sheet-nummer link, hatch per materiaal.
+- **Structural view IFC-export** (`IfcStructuralAnalysisModel`, 3–4w): round-trip Scia/RFEM.
+- **Rc/U-waarde** in `Pset_MaterialThermal` (1–2w): Bbl-eisen (Rc ≥ 4,7 gevel / 6,3 dak /
+  3,7 vloer) + ILS-check op minimale Rc.
+- **COBie-compatible export** (2–3w): `IfcSpace` / `IfcSystem` / `IfcAsset` + onderhoudsdata-psets.
+- **ILS O&E via IDS-templates** (2w): SO/VO/DO/TO/UO fase-specifiek.
+- **Fasering UI**: view-filters + graphic overrides op de S1-datashape.
+- **Sheets-preview MVP** (uit vorig overleg, 3–4w): SVG paper-laag + `react-rnd` viewports +
+  gedeelde offscreen renderer met `setViewport`/`setScissor`.
+- **Doorsnedes fase 1** (uit vorig overleg, 2–3w): `ClipEdges` uit
+  `@thatopen/components-front`, per `IfcMaterial` lijndikte/kleur.
+
+### v1.0 — Ecosysteem · ≈13–15 weken (2027)
+
+- **`.o3st` JSON-serialisatie + user-editable template-editor** (8–12w): non-devs kunnen
+  bijdragen. Community-marketplace `catalog.opendriestudio.nl`.
+- **IFC-family-import** als `IfcBuildingElementProxy` (4–6w): Ubbink, Rockpanel, Simpson,
+  Wienerberger, Kingspan als read-only proxies.
+- **MEP-basisset** 10–15 templates (6–8w): `IfcPipeSegment/Fitting`, `IfcDuctSegment/Fitting`,
+  `IfcAirTerminal`, `IfcSpaceHeater`, `IfcOutlet`, `IfcCableSegment`. Connectoren-concept.
+- **Wapening** (4–6w): `IfcReinforcingBar` + `IfcReinforcingMesh` met generator voor
+  kolommen/balken/vloeren. B500B. Bewust niet op Tekla-niveau.
+- **Speckle-connector** (3–4w): versioned object graph + branching. In plaats van eigen
+  real-time multi-user sync.
+- **Plugin-API** voor TS-scripting (4–6w): community-automatiseringen. Vervangt Grasshopper.
+- **Doorsnedes fase 2 + 3** (uit vorig overleg): 2D-canvas + hatching + dimensies +
+  `IfcAnnotation` round-trip.
+
+### Bewust NOOIT
+
+Real-time multi-user cloud sync (Qonic-domein — koppel Speckle) · eigen FEM-solver
+(Scia/RFEM-domein) · eigen parametrische wapening-editor op Tekla-niveau · eigen MEP-toolkit
+à la Stabicad/MagiCAD · eigen houtverbindings-solver à la Cadwork/Dietrich's · eigen
+Grasshopper-node-editor · volledige IFC4-DTV round-trip voor derde-partij IFC's (Bonsai-domein).
+Voor deze domeinen: koppelen i.p.v. nabouwen.
+
+### Framing
+
+Niet "concurrent van Revit" maar **"openBIM-native modelleergereedschap voor de Nederlandse
+bouw met focus op fabrikant-catalogi en ILS/IDS-conformiteit"**. Onder die framing is
+65/100 op de universele schaal 100/100 op de eigen niche.
