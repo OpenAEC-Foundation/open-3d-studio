@@ -21,6 +21,7 @@ export const prefabBetonkolom: ComponentTemplate = {
   ifcEntity: "IfcColumn",
   ifcPredefinedType: "COLUMN",
   profileSpec: findProfile("Beton 300x300"),
+  profileSpecFor: (p) => findProfile(String(p.profiel)),
 
   params: [
     { key: "profiel", label: "Profiel", type: "select", options: profileOptions(CONCRETE_PROFILES) },

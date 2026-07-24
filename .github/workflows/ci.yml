@@ -48,6 +48,9 @@ jobs:
       - run: npm ci
       - run: pip install ifcopenshell pytest
       - run: npm run test:ifc
+      # Geometrie-orakel: meshvolume ÷ lengte moet de analytische
+      # profieloppervlakte geven (geometrie-stap 1, echte doorsnedes).
+      - run: node tests/headless/dist/geometry-oracle.js
       # Bij een rode poort is het afgekeurde bestand zelf het bewijsstuk.
       - name: Bewaar het afgekeurde IFC
         if: failure()

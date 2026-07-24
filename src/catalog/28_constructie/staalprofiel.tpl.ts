@@ -3,13 +3,16 @@ import { STEEL_PROFILES, findProfile, profileOptions } from "../_shared/profiles
 
 /** Universeel constructiestaal-template.
  *  Eén file levert ~300 modelleerbare varianten dankzij de profielCatalogus-select
- *  (IPE, HEA/HEB/HEM, UNP, SHS/RHS, CHS, L). Zowel als balk als kolom bruikbaar
- *  via de `richting`-parameter (horizontaal / verticaal).
+ *  (IPE, HEA/HEB/HEM, UNP, SHS/RHS, CHS, L).
  *
- *  IFC-export (Sprint 9): `IfcMaterialProfileSetUsage` met de juiste
- *  `Ifc{I,U,L,Rectangle,Circle}HollowProfileDef`. Voor v0.4-S4 wordt het profiel
- *  visueel als enveloppe-box weergegeven (bounding box). De echte geëxtrudeerde
- *  profielgeometrie komt in v0.5 samen met de structural view. */
+ *  Sinds de geometrie-stap is de doorsnede écht: `profileSpecFor` levert het
+ *  gekozen profiel per element, en meshBuilder/ifcExport extruderen dat als
+ *  werkelijke vorm (fillets incluis) in 3D-weergave én IFC-body. De
+ *  `solids()`-enveloppe hieronder is alleen nog de terugval voor elementen
+ *  met sparingen en voor de 2D-consumenten (sectionSvg, elementeren).
+ *
+ *  De `richting`-parameter is voorbereid maar nog niet bedraad: een
+ *  kolom-adapter (IfcColumn + verticale extrusie) bestaat nog niet. */
 
 const MM = 0.001;
 
@@ -52,10 +55,11 @@ export const staalprofiel: ComponentTemplate = {
 
   placementKind: "linear",
 
-  ifcEntity: "IfcBeam", // wordt IfcColumn als richting="verticaal" (zie ifcExport-adapter)
+  ifcEntity: "IfcBeam", // kolom-adapter (IfcColumn bij richting="verticaal") bestaat nog niet
   ifcPredefinedType: "BEAM",
 
   profileSpec: findProfile("IPE 200"),
+  profileSpecFor: (p) => findProfile(String(p.profiel)),
 
   params: [
     { key: "profiel", label: "Profiel (NEN-EN 10365)", type: "select", options: profileOptions(STEEL_PROFILES) },

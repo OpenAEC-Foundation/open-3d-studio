@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test:ifc": "vite build --config tests/headless/vite.config.ts && node tests/headless/dist/export-scene.js && python tests/validate_ifc.py",
+    "test:geom": "vite build --config tests/headless/vite.config.ts && node tests/headless/dist/geometry-oracle.js",
     "postinstall": "node scripts/copy-assets.mjs"
   },
   "dependencies": {

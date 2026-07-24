@@ -21,6 +21,7 @@ export const prefabBetonligger: ComponentTemplate = {
   ifcEntity: "IfcBeam",
   ifcPredefinedType: "BEAM",
   profileSpec: findProfile("Beton 400x300"),
+  profileSpecFor: (p) => findProfile(String(p.profiel)),
 
   params: [
     { key: "profiel", label: "Profiel", type: "select",

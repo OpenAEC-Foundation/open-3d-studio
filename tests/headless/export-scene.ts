@@ -55,7 +55,12 @@ const elements: PlacedElement[] = [
   el("wand-b", "hsb-buitenwand", "Wand B", v(5.4, 0, 0), v(5.4, 0, 4.2), { typeId: "type-hsb" }),
   el("raam-1", "kozijn-draai-kiep", "Raam 1", v(1.5, 0, 0), v(2.7, 0, 0), { hostId: "wand-a" }),
   el("deur-1", "voordeur", "Voordeur", v(5.4, 0, 1.0), v(5.4, 0, 1.93), { hostId: "wand-b" }),
-  el("ligger-1", "staalprofiel-nen10365", "Stalen ligger", v(0, 2.7, 0), v(5.4, 2.7, 0)),
+  // Bewust een níet-default profiel: met de statische template-spec beweerde
+  // het IFC hier IPE 200; de verwachtingen-sectie van validate_ifc.py toetst
+  // dat body én materiaalprofiel de gekozen HEA 160 dragen.
+  el("ligger-1", "staalprofiel-nen10365", "Stalen ligger", v(0, 2.7, 0), v(5.4, 2.7, 0), {
+    params: { ...tpl("staalprofiel-nen10365").defaults, profiel: "HEA 160" },
+  }),
   el("vloer-1", "vbi-kanaalplaat", "Verdiepingsvloer", v(0, 3, 0), v(5.4, 3, 0), { storeyId: "s1" }),
   el("lamelwand-1", "storax-rooster-lamelwand", "Lamelwand", v(0, 3, 4.2), v(5.4, 3, 4.2), { storeyId: "s1" }),
 ];

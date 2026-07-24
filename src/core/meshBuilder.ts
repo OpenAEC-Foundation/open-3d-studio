@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { ComponentTemplate, Opening, ParamValues, SolidBox } from "./types";
+import { profileExtrusion, profileHeight, resolveProfileSpec } from "./profileGeometry";
 
 /** Past één rechthoekige sparing toe: doorsnijdt volumes binnen het gebied
  *  [x0,x1] × [z0,z1] (as-richting × hoogte). Basisbouwsteen voor alle vormen. */
@@ -190,6 +191,13 @@ export function buildElementGroup(
   const solids = elementSolids(template, length, params, openings);
 
   const baseColor = opts.phaseColor ?? template.color(params);
+  const openingList = Array.isArray(openings) ? openings : openings ? [openings] : [];
+  // Echte doorsnede voor constructieprofielen (geometrie-stap 1): een element
+  // mét profielspec en zónder sparingen krijgt de geëxtrudeerde doorsnede in
+  // plaats van de enveloppe-doos. Met sparingen valt hij terug op de dozen —
+  // de snijmachinerie (cutRect) kent alleen dozen, en dat blijft eerlijker
+  // dan een gat negeren.
+  const profileSpec = openingList.length === 0 ? resolveProfileSpec(template, params) : undefined;
   const opacityRaw = (opts.preview ? 0.55 : 1) * (opts.phaseOpacity ?? 1);
   const transparent = opts.preview || (opts.phaseOpacity !== undefined && opts.phaseOpacity < 1);
   const material = new THREE.MeshStandardMaterial({
@@ -201,6 +209,33 @@ export function buildElementGroup(
     emissive: opts.selected ? new THREE.Color("#d97706") : new THREE.Color("#000000"),
     emissiveIntensity: opts.selected ? 0.45 : 0,
   });
+
+  if (profileSpec) {
+    const geometry = profileExtrusion(profileSpec, length);
+    if (geometry) {
+      const mesh = new THREE.Mesh(geometry, material);
+      // Profielhart ligt op de oorsprong; onderkant op 0, zoals de doos deed.
+      mesh.position.set(0, profileHeight(profileSpec) / 2, 0);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      group.add(mesh);
+      if (opts.phaseWireframe) {
+        const edges = new THREE.EdgesGeometry(geometry);
+        const line = new THREE.LineSegments(
+          edges,
+          new THREE.LineDashedMaterial({
+            color: new THREE.Color(baseColor).offsetHSL(0, 0.2, -0.1),
+            dashSize: 0.15,
+            gapSize: 0.08,
+          }),
+        );
+        line.position.copy(mesh.position);
+        line.computeLineDistances();
+        group.add(line);
+      }
+      return group;
+    }
+  }
 
   for (const s of solids) {
     const geometry = new THREE.BoxGeometry(s.dx, s.dz, s.dy);

@@ -170,6 +170,12 @@ export interface ComponentTemplate {
   materialLayers?: MaterialLayer[];
   /** Voor staal/hout: profielselectie. Genereert IfcMaterialProfileSetUsage. */
   profileSpec?: ProfileSpec;
+  /** Profiel per element, uit de parameters (bv. de "profiel"-select). Wint van
+   *  het statische `profileSpec`. Zonder deze methode kreeg elk element het
+   *  template-default als materiaalprofiel — HEA 160 kiezen leverde een IFC dat
+   *  IPE 200 beweerde. Voedt sinds de geometrie-stap óók de échte
+   *  doorsnede-extrusie in 3D-weergave en IFC-body (profileGeometry.ts). */
+  profileSpecFor?(p: ParamValues): ProfileSpec | undefined;
 
   /** IFC-entiteit waarnaar dit component exporteert. Uitgebreid in v0.4 —
    *  bestaande "IfcWall"|"IfcBeam"|"IfcPlate" blijven geldig. */

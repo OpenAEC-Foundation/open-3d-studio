@@ -21,6 +21,7 @@ export const glulamKolom: ComponentTemplate = {
   ifcEntity: "IfcColumn",
   ifcPredefinedType: "COLUMN",
   profileSpec: findProfile("Glulam 240x180"),
+  profileSpecFor: (p) => findProfile(String(p.profiel)),
 
   params: [
     { key: "profiel", label: "Profiel", type: "select", options: profileOptions(GLULAM_PROFILES) },

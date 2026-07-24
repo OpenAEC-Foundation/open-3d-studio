@@ -12,7 +12,13 @@ import { defineConfig } from "vite";
  *  onder Node over — zie src/core/ifcCommon.ts. */
 export default defineConfig({
   build: {
-    ssr: "tests/headless/export-scene.ts",
+    ssr: true,
+    rollupOptions: {
+      input: {
+        "export-scene": "tests/headless/export-scene.ts",
+        "geometry-oracle": "tests/headless/geometry-oracle.ts",
+      },
+    },
     outDir: "tests/headless/dist",
     emptyOutDir: true,
     target: "node20",

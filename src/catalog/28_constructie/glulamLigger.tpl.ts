@@ -21,6 +21,7 @@ export const glulamLigger: ComponentTemplate = {
   ifcEntity: "IfcBeam",
   ifcPredefinedType: "BEAM",
   profileSpec: findProfile("Glulam 400x240"),
+  profileSpecFor: (p) => findProfile(String(p.profiel)),
 
   params: [
     { key: "profiel", label: "Profiel", type: "select", options: profileOptions(GLULAM_PROFILES) },

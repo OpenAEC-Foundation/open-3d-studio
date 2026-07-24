@@ -1,15 +1,93 @@
 import * as WebIFC from "web-ifc";
-import type { ElementJoin, GridConfig, PlacedElement, ProjectOrigin, Storey, TypeDefinition } from "./types";
+import type { ElementJoin, GridConfig, PlacedElement, ProfileSpec, ProjectOrigin, Storey, TypeDefinition } from "./types";
 import { getTemplate } from "../catalog/registry";
 import { elementOpenings, elementSolids } from "./meshBuilder";
 import { entityMakers, makeCommonProps } from "./ifcEntityMap";
 import { commonPsetFor } from "./psetFactories";
 import { materialThermalProps, thermalPsetProps } from "./thermal";
 import { getIfcApi, newIfcGuid } from "./ifcCommon";
+import { profileHeight, resolveProfileSpec } from "./profileGeometry";
 
 const { IFC4 } = WebIFC;
 
 const MM = 0.001;
+
+/** Parametrische IfcProfileDef uit een ProfileSpec — één definitie voor het
+ *  materiaalprofiel (IfcMaterialProfileSetUsage) én, sinds de geometrie-stap,
+ *  de body-extrusie zelf. In het profielvlak: X = dwars op de as, Y = omhoog.
+ *
+ *  Bij Rectangle(Hollow) is de catalogus-conventie XDim = hoogte (zo tekenen
+ *  envelope() en solids() de doos). De oude materiaal-def schreef XDim op het
+ *  X-attribuut en stond daarmee 90° gedraaid op de getekende werkelijkheid;
+ *  hier gaat de hoogte naar het Y-attribuut. */
+function buildProfileDef(spec: ProfileSpec): InstanceType<typeof IFC4.IfcProfileDef> | null {
+  const label = (v: string) => new IFC4.IfcLabel(v);
+  const plen = (v: number) => new IFC4.IfcPositiveLengthMeasure(v);
+  const len = (v: number) => new IFC4.IfcLengthMeasure(v);
+  const p2 = new IFC4.IfcAxis2Placement2D(
+    new IFC4.IfcCartesianPoint([len(0), len(0)]),
+    null,
+  );
+  const d = spec.dimensions;
+  switch (spec.shape) {
+    case "IShape":
+      return new IFC4.IfcIShapeProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+        plen((d.OverallWidth ?? 100) * MM),
+        plen((d.OverallDepth ?? 200) * MM),
+        plen((d.WebThickness ?? 6) * MM),
+        plen((d.FlangeThickness ?? 10) * MM),
+        d.FilletRadius ? plen(d.FilletRadius * MM) : null,
+        null, null,
+      );
+    case "UShape":
+      return new IFC4.IfcUShapeProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+        plen((d.OverallDepth ?? 100) * MM),
+        plen((d.FlangeWidth ?? 50) * MM),
+        plen((d.WebThickness ?? 6) * MM),
+        plen((d.FlangeThickness ?? 10) * MM),
+        d.FilletRadius ? plen(d.FilletRadius * MM) : null,
+        null, null,
+      );
+    case "LShape":
+      return new IFC4.IfcLShapeProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+        plen((d.Depth ?? 50) * MM),
+        plen((d.Width ?? 50) * MM),
+        plen((d.Thickness ?? 5) * MM),
+        d.FilletRadius ? plen(d.FilletRadius * MM) : null,
+        null, null,
+      );
+    case "RectangleHollow":
+      return new IFC4.IfcRectangleHollowProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+        plen((d.YDim ?? 100) * MM),
+        plen((d.XDim ?? 200) * MM),
+        plen((d.WallThickness ?? 5) * MM),
+        null, null,
+      );
+    case "CircleHollow":
+      return new IFC4.IfcCircleHollowProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+        plen((d.Radius ?? 100) * MM),
+        plen((d.WallThickness ?? 5) * MM),
+      );
+    case "Rectangle":
+      return new IFC4.IfcRectangleProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+        plen((d.YDim ?? 100) * MM),
+        plen((d.XDim ?? 200) * MM),
+      );
+    case "Circle":
+      return new IFC4.IfcCircleProfileDef(
+        IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
+        plen((d.Radius ?? 100) * MM),
+      );
+    default:
+      return null;
+  }
+}
 
 /** Exporteert de geplaatste elementen als zelfstandig IFC4-aspectmodel.
  *  Coördinaten: three.js (y omhoog) -> IFC (z omhoog): x=x, y=-z, z=y. Meters.
@@ -255,23 +333,49 @@ export async function exportElementsToIfc(
     // geometrie: dezelfde solids-definitie als de 3D-weergave (incl. sparingen)
     const items: InstanceType<typeof IFC4.IfcExtrudedAreaSolid>[] = [];
     const colorHex = template.color(el.params);
+    // Echte doorsnede voor constructieprofielen (geometrie-stap 1), gespiegeld
+    // aan meshBuilder: profielspec zonder sparingen → één extrusie van de
+    // parametrische IfcProfileDef langs de elementas (profielvlak: X = dwars,
+    // Y = omhoog; extrusierichting = lokale x). Met sparingen: enveloppe-dozen,
+    // zoals de 3D-weergave dan ook toont.
+    // De enveloppe-dozen blijven ook op het profielpad nodig: entityMakers
+    // berekent er de Door/Window-envelope (OverallHeight/Width) uit.
     const solids = elementSolids(template, length, el.params, elementOpenings(el));
-    for (const s of solids) {
-      const profile = new IFC4.IfcRectangleProfileDef(
-        IFC4.IfcProfileTypeEnum.AREA,
-        null,
-        new IFC4.IfcAxis2Placement2D(pt2(0, 0), null),
-        plen(s.dx),
-        plen(s.dy),
-      );
+    const bodySpec = elementOpenings(el).length === 0
+      ? resolveProfileSpec(template, el.params)
+      : undefined;
+    const bodyProfileDef = bodySpec ? buildProfileDef(bodySpec) : null;
+    if (bodySpec && bodyProfileDef) {
       const solid = new IFC4.IfcExtrudedAreaSolid(
-        profile,
-        new IFC4.IfcAxis2Placement3D(pt3(s.cx, s.cy, s.zBottom), null, null),
+        bodyProfileDef,
+        new IFC4.IfcAxis2Placement3D(
+          pt3(0, 0, profileHeight(bodySpec) / 2),
+          dir3(1, 0, 0),
+          dir3(0, 1, 0),
+        ),
         dir3(0, 0, 1),
-        plen(s.dz),
+        plen(length),
       );
       items.push(solid);
       styledItems.push(new IFC4.IfcStyledItem(solid, [surfaceStyle(colorHex)], null));
+    } else {
+      for (const s of solids) {
+        const profile = new IFC4.IfcRectangleProfileDef(
+          IFC4.IfcProfileTypeEnum.AREA,
+          null,
+          new IFC4.IfcAxis2Placement2D(pt2(0, 0), null),
+          plen(s.dx),
+          plen(s.dy),
+        );
+        const solid = new IFC4.IfcExtrudedAreaSolid(
+          profile,
+          new IFC4.IfcAxis2Placement3D(pt3(s.cx, s.cy, s.zBottom), null, null),
+          dir3(0, 0, 1),
+          plen(s.dz),
+        );
+        items.push(solid);
+        styledItems.push(new IFC4.IfcStyledItem(solid, [surfaceStyle(colorHex)], null));
+      }
     }
 
     const bodyRep = new IFC4.IfcShapeRepresentation(
@@ -598,76 +702,13 @@ export async function exportElementsToIfc(
     const template = templateByElementId.get(el.id);
     const product = productByElementId.get(el.id);
     if (!template || !product) continue;
-    if (!template.profileSpec) continue;
-    const spec = template.profileSpec;
-    const d = spec.dimensions;
-    const p2 = new IFC4.IfcAxis2Placement2D(pt2(0, 0), null);
-    let profileDef: any;
-    switch (spec.shape) {
-      case "IShape":
-        profileDef = new IFC4.IfcIShapeProfileDef(
-          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
-          plen((d.OverallWidth ?? 100) * MM),
-          plen((d.OverallDepth ?? 200) * MM),
-          plen((d.WebThickness ?? 6) * MM),
-          plen((d.FlangeThickness ?? 10) * MM),
-          d.FilletRadius ? plen(d.FilletRadius * MM) : null,
-          null, null,
-        );
-        break;
-      case "UShape":
-        profileDef = new IFC4.IfcUShapeProfileDef(
-          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
-          plen((d.OverallDepth ?? 100) * MM),
-          plen((d.FlangeWidth ?? 50) * MM),
-          plen((d.WebThickness ?? 6) * MM),
-          plen((d.FlangeThickness ?? 10) * MM),
-          d.FilletRadius ? plen(d.FilletRadius * MM) : null,
-          null, null,
-        );
-        break;
-      case "LShape":
-        profileDef = new IFC4.IfcLShapeProfileDef(
-          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
-          plen((d.Depth ?? 50) * MM),
-          plen((d.Width ?? 50) * MM),
-          plen((d.Thickness ?? 5) * MM),
-          d.FilletRadius ? plen(d.FilletRadius * MM) : null,
-          null, null,
-        );
-        break;
-      case "RectangleHollow":
-        profileDef = new IFC4.IfcRectangleHollowProfileDef(
-          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
-          plen((d.XDim ?? 100) * MM),
-          plen((d.YDim ?? 100) * MM),
-          plen((d.WallThickness ?? 5) * MM),
-          null, null,
-        );
-        break;
-      case "CircleHollow":
-        profileDef = new IFC4.IfcCircleHollowProfileDef(
-          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
-          plen((d.Radius ?? 100) * MM),
-          plen((d.WallThickness ?? 5) * MM),
-        );
-        break;
-      case "Rectangle":
-        profileDef = new IFC4.IfcRectangleProfileDef(
-          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
-          plen((d.XDim ?? 200) * MM),
-          plen((d.YDim ?? 100) * MM),
-        );
-        break;
-      case "Circle":
-        profileDef = new IFC4.IfcCircleProfileDef(
-          IFC4.IfcProfileTypeEnum.AREA, label(spec.designation), p2,
-          plen((d.Radius ?? 100) * MM),
-        );
-        break;
-      default:
-        continue;
-    }
+    // Per element geresolved (profileSpecFor): met de statische template-spec
+    // kreeg élk element het default-profiel als materiaal — HEA 160 kiezen
+    // leverde een IFC dat IPE 200 beweerde.
+    const spec = resolveProfileSpec(template, el.params);
+    if (!spec) continue;
+    const profileDef = buildProfileDef(spec);
+    if (!profileDef) continue;
     const materialName = template.material ?? "Staal S235";
     const matProfile = new IFC4.IfcMaterialProfile(
       label(spec.designation), null, getIfcMaterial(materialName), profileDef, null, null,
