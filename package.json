@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "test:ifc": "vite build --config tests/headless/vite.config.ts && node tests/headless/dist/export-scene.js && python tests/validate_ifc.py",
     "postinstall": "node scripts/copy-assets.mjs"
   },
   "dependencies": {

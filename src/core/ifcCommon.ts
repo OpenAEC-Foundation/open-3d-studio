@@ -17,7 +17,13 @@ export function getIfcApi(): Promise<WebIFC.IfcAPI> {
   if (!apiPromise) {
     apiPromise = (async () => {
       const api = new WebIFC.IfcAPI();
-      api.SetWasmPath("/wasm/", true);
+      // In de browser serveert de app de wasm vanaf /wasm/ (scripts/copy-assets.mjs).
+      // Onder Node (headless IFC-poort, tests/) resolven imports van "web-ifc" naar
+      // web-ifc-api-node.js, die zijn wasm naast zichzelf vindt — dit absolute pad
+      // zou hem daar juist breken.
+      if (typeof window !== "undefined") {
+        api.SetWasmPath("/wasm/", true);
+      }
       await api.Init();
       return api;
     })();
