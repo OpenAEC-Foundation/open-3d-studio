@@ -18,8 +18,17 @@ const { IFC4 } = WebIFC;
  *  vallen we terug op `USERDEFINED` + `ifcObjectType`. */
 
 // Constructor-helper — zet de spread-cast op één plek in plaats van op elke call.
+// Vult bovendien aan tot de volledige constructor-arity: web-ifc schrijft een
+// ontbrekend argument als STEP `*` ("afgeleid attribuut"), en dat is buiten
+// afgeleide attributen schema-ongeldig. Gemeten door de IFC-poort
+// (tests/validate_ifc.py): IfcDoorType/IfcWindowType misten hun laatste
+// attribuut en kregen `*` waar `$` hoort.
 function ctor(cls: any, args: any[]): any {
-  return new cls(...args);
+  const filled =
+    args.length < cls.length
+      ? [...args, ...Array(cls.length - args.length).fill(null)]
+      : args;
+  return new cls(...filled);
 }
 
 export interface EntityMakers {
@@ -173,7 +182,9 @@ export function entityMakers(
       const opEnum = () => resolveEnum(IFC4.IfcDoorTypeOperationEnum, undefined, "NOTDEFINED");
       return {
         product: (c) => ctor(IFC4.IfcDoor, [...c, overallHeight, overallWidth, preEnum(), opEnum(), null]),
-        type: (a) => ctor(IFC4.IfcDoorType, [...a, preEnum(), opEnum(), null]),
+        // 4 staartargumenten: PredefinedType, OperationType, ParameterTakesPrecedence,
+        // UserDefinedOperationType — de laatste ontbrak en werd `*` in de STEP.
+        type: (a) => ctor(IFC4.IfcDoorType, [...a, preEnum(), opEnum(), null, null]),
         psetName: "Pset_DoorCommon",
         needsEnvelope: true,
       };
@@ -186,7 +197,9 @@ export function entityMakers(
       const partEnum = () => resolveEnum(IFC4.IfcWindowTypePartitioningEnum, undefined, "NOTDEFINED");
       return {
         product: (c) => ctor(IFC4.IfcWindow, [...c, overallHeight, overallWidth, preEnum(), partEnum(), null]),
-        type: (a) => ctor(IFC4.IfcWindowType, [...a, preEnum(), partEnum(), null]),
+        // 4 staartargumenten: PredefinedType, PartitioningType, ParameterTakesPrecedence,
+        // UserDefinedPartitioningType — de laatste ontbrak en werd `*` in de STEP.
+        type: (a) => ctor(IFC4.IfcWindowType, [...a, preEnum(), partEnum(), null, null]),
         psetName: "Pset_WindowCommon",
         needsEnvelope: true,
       };
@@ -196,7 +209,8 @@ export function entityMakers(
       const compEnum = () => resolveEnum(IFC4.IfcElementCompositionEnum, undefined, "ELEMENT");
       return {
         product: (c) => ctor(IFC4.IfcSpace, [...c, compEnum(), preEnum(), null]),
-        type: (a) => ctor(IFC4.IfcSpaceType, [...a, preEnum()]),
+        // IfcSpaceType heeft na PredefinedType nog LongName (11 attributen).
+        type: (a) => ctor(IFC4.IfcSpaceType, [...a, preEnum(), null]),
         psetName: "Pset_SpaceCommon",
         needsEnvelope: false,
       };
@@ -205,7 +219,11 @@ export function entityMakers(
       const preEnum = () => resolveEnum(IFC4.IfcOpeningElementTypeEnum, preName, "OPENING");
       return {
         product: (c) => ctor(IFC4.IfcOpeningElement, [...c, preEnum()]),
-        type: (a) => ctor(IFC4.IfcOpeningElement, [...a, preEnum()]),
+        // IFC4 kent géén IfcOpeningElementType (gemeten: web-ifc heeft de klasse
+        // niet). De vorige versie schreef hier een tweede IfcOpeningElement met
+        // type-argumenten in product-slots. Sparingen krijgen geen type; de
+        // export slaat een null-type over.
+        type: () => null,
         psetName: "Pset_OpeningElementCommon",
         needsEnvelope: false,
       };

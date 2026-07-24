@@ -70,15 +70,19 @@ export async function exportElementsToIfc(
     label("Open 3D Studio"),
     ident("open-3d-studio"),
   );
+  // WHERE-regel IfcOwnerHistory.CorrectChangeAction: bij ChangeAction .ADDED.
+  // is LastModifiedDate verplicht. Voor een verse export is "laatst gewijzigd"
+  // gelijk aan "aangemaakt".
+  const created = new IFC4.IfcTimeStamp(Math.floor(Date.now() / 1000));
   const ownerHistory = new IFC4.IfcOwnerHistory(
     personOrg,
     application,
     null,
     IFC4.IfcChangeActionEnum.ADDED,
+    created,
     null,
     null,
-    null,
-    new IFC4.IfcTimeStamp(Math.floor(Date.now() / 1000)),
+    created,
   );
 
   // -- eenheden (SI, meters) --
@@ -385,7 +389,11 @@ export async function exportElementsToIfc(
       list.push(product);
       byNlSfb.set(template.nlSfb, list);
     }
-    if (template.material) {
+    // De kale materiaalkoppeling alleen wanneer er verderop geen rijkere komt:
+    // elementen met materiaallagen of een profiel krijgen daar hun eigen
+    // IfcRelAssociatesMaterial (LayerSet/ProfileSetUsage), en IfcBuildingElement
+    // staat er maximaal één toe (WHERE-regel MaxOneMaterialAssociation).
+    if (template.material && !template.materialLayers?.length && !template.profileSpec) {
       const list = byMaterial.get(template.material) ?? [];
       list.push(product);
       byMaterial.set(template.material, list);
@@ -790,6 +798,8 @@ export async function exportElementsToIfc(
     // Generieke type-factory via entity-mapper (v0.4-S1).
     const typeMakers = entityMakers(t, t.solids(1, t.defaults));
     const typeEntity = typeMakers.type([...typeArgs] as any[]);
+    // Entiteiten zonder typebegrip in IFC4 (sparingen) leveren geen type.
+    if (!typeEntity) continue;
     api.WriteLine(
       modelID,
       new IFC4.IfcRelDefinesByType(guid(), ownerHistory, null, null, group.products, typeEntity),
