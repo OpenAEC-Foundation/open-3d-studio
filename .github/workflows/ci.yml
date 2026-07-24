@@ -1,0 +1,58 @@
+# CI voor Open 3D Studio.
+#
+# Twee poorten, allebei lokaal gemeten vóór ze hier werden vastgelegd:
+#
+# 1. `bouw` — het bestaande contract van de repo: tsc --noEmit + vite build
+#    (npm run build). Groen gemeten op 24-7-2026 in 18,4 s.
+# 2. `ifc-poort` — de onafhankelijke IFC-validatie (tests/): de échte
+#    exportElementsToIfc speelt een representatieve scène af en IfcOpenShell
+#    toetst het resultaat met álle EXPRESS WHERE-regels. Bij de eerste meting
+#    ving deze poort 7 klachten in 4 klassen; zonder CI bewaakt hij maar één
+#    machine.
+#
+# De rule-executor van IfcOpenShell heeft pytest nodig (assertion-rewriting);
+# Python 3.12 omdat ifcopenshell-wheels daar bewezen voor bestaan (het
+# Storax-zusterproject draait er al CI op).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bouw:
+    name: Typecheck + Vite-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  ifc-poort:
+    name: IFC-poort (echte export, alle WHERE-regels)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: pip install ifcopenshell pytest
+      - run: npm run test:ifc
+      # Bij een rode poort is het afgekeurde bestand zelf het bewijsstuk.
+      - name: Bewaar het afgekeurde IFC
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poort-ifc
+          path: tests/out/poort.ifc
+          if-no-files-found: ignore
